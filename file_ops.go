@@ -60,6 +60,9 @@ func (ufs *UnionFS) OpenFile(name string, flag int, perm os.FileMode) (afero.Fil
 		whiteout := whiteoutPath(name)
 		layer.fs.Remove(whiteout)
 
+		// Invalidate cache for this path since we're writing to it
+		ufs.InvalidateCache(name)
+
 		// Open file in writable layer
 		return layer.fs.OpenFile(name, flag, perm)
 	}
@@ -102,7 +105,11 @@ func (ufs *UnionFS) Mkdir(name string, perm os.FileMode) error {
 	whiteout := whiteoutPath(name)
 	layer.fs.Remove(whiteout)
 
-	return layer.fs.Mkdir(name, perm)
+	err = layer.fs.Mkdir(name, perm)
+	if err == nil {
+		ufs.InvalidateCache(name)
+	}
+	return err
 }
 
 // MkdirAll creates a directory and all parent directories
@@ -123,7 +130,11 @@ func (ufs *UnionFS) MkdirAll(name string, perm os.FileMode) error {
 		layer.fs.Remove(whiteout)
 	}
 
-	return layer.fs.MkdirAll(name, perm)
+	err = layer.fs.MkdirAll(name, perm)
+	if err == nil {
+		ufs.InvalidateCacheTree(name)
+	}
+	return err
 }
 
 // Remove deletes a file or empty directory by creating a whiteout
@@ -162,6 +173,7 @@ func (ufs *UnionFS) Remove(name string) error {
 		f.Close()
 	}
 
+	ufs.InvalidateCache(name)
 	return nil
 }
 
@@ -204,6 +216,7 @@ func (ufs *UnionFS) RemoveAll(name string) error {
 	// Suppress unused variable warning
 	_ = info
 
+	ufs.InvalidateCacheTree(name)
 	return nil
 }
 
@@ -257,6 +270,8 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 		f.Close()
 	}
 
+	ufs.InvalidateCache(oldname)
+	ufs.InvalidateCache(newname)
 	return nil
 }
 
@@ -281,7 +296,11 @@ func (ufs *UnionFS) Chmod(name string, mode os.FileMode) error {
 		}
 	}
 
-	return layer.fs.Chmod(name, mode)
+	err = layer.fs.Chmod(name, mode)
+	if err == nil {
+		ufs.InvalidateCache(name)
+	}
+	return err
 }
 
 // Chown changes file ownership
@@ -305,7 +324,11 @@ func (ufs *UnionFS) Chown(name string, uid, gid int) error {
 		}
 	}
 
-	return layer.fs.Chown(name, uid, gid)
+	err = layer.fs.Chown(name, uid, gid)
+	if err == nil {
+		ufs.InvalidateCache(name)
+	}
+	return err
 }
 
 // Chtimes changes file access and modification times
@@ -329,7 +352,11 @@ func (ufs *UnionFS) Chtimes(name string, atime, mtime time.Time) error {
 		}
 	}
 
-	return layer.fs.Chtimes(name, atime, mtime)
+	err = layer.fs.Chtimes(name, atime, mtime)
+	if err == nil {
+		ufs.InvalidateCache(name)
+	}
+	return err
 }
 
 // splitPath splits a path into components
