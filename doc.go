@@ -168,10 +168,46 @@ UnionFS uses read-write locks to ensure thread-safe access to the layer stack. M
 goroutines can safely read from the filesystem concurrently, while write operations are
 properly synchronized.
 
+# absfs Ecosystem Integration
+
+UnionFS is part of the absfs ecosystem and implements both afero.Fs and absfs.Filer interfaces,
+enabling seamless composition with other absfs packages.
+
+Get an absfs.FileSystem view:
+
+	ufs := unionfs.New(
+	    unionfs.WithWritableLayer(overlay),
+	    unionfs.WithReadOnlyLayer(base),
+	)
+
+	// Get absfs.FileSystem with working directory support
+	fs := ufs.FileSystem()
+	fs.Chdir("/app")
+	file, err := fs.Open("config.yml") // Relative to /app
+
+Compose with other absfs packages:
+
+	// UnionFS provides: multi-layer composition + copy-on-write
+	union := unionfs.New(...).FileSystem()
+
+	// Wrap with other absfs packages for additional functionality:
+	// - cachefs:   Add caching layer (performance)
+	// - rofs:      Make read-only (safety)
+	// - metricsfs: Add Prometheus metrics (observability)
+	// - retryfs:   Add retry logic (reliability)
+	// - permfs:    Add access control (security)
+
+This demonstrates the absfs philosophy: each package has a single responsibility,
+and complex behaviors emerge from simple composition.
+
 # Compatibility
 
-UnionFS implements the afero.Fs interface and can be used as a drop-in replacement
-wherever afero filesystems are accepted.
+UnionFS implements both:
+  - afero.Fs interface - for compatibility with afero-based code
+  - absfs.Filer interface - for integration with the absfs ecosystem
+
+Use ExtendFiler or FileSystem() to get the full absfs.FileSystem interface with
+convenience methods and working directory support.
 
 # Limitations
 
