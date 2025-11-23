@@ -13,6 +13,8 @@ UnionFS enables the composition of multiple filesystem layers into a single unif
 - Read-only base layers with writable overlay
 - Efficient file lookup through layer precedence
 - Full `afero.Fs` interface compatibility
+- `absfs.Filer` interface implementation for ecosystem integration
+- Composable with other absfs packages (cachefs, rofs, metricsfs, etc.)
 
 **Use Cases:**
 - Container filesystem implementations
@@ -372,6 +374,53 @@ func TenantFilesystem(tenantID string) afero.Fs {
 - **File count**: Large directories may need special handling
 - **Deep paths**: Nested directory structures increase lookup cost
 - **Write amplification**: CoW can cause significant copying
+
+## absfs Ecosystem Integration
+
+UnionFS is part of the [absfs ecosystem](https://github.com/absfs) and follows its philosophy of single responsibility and composability.
+
+### Philosophy
+
+Each absfs package does **one thing well**:
+- **unionfs** (this package): Multi-layer composition + copy-on-write
+- **cachefs**: Performance caching
+- **rofs**: Read-only enforcement
+- **metricsfs**: Observability/metrics
+- **retryfs**: Retry logic
+- **permfs**: Access control
+
+Complex behaviors emerge from simple composition:
+
+```go
+// Each layer adds ONE responsibility
+base := unionfs.New(...).FileSystem()    // Multi-layer composition
+cached := cachefs.New(base)               // Add caching
+readOnly := rofs.New(cached)              // Make read-only
+monitored := metricsfs.New(readOnly)      // Add metrics
+
+// Result: Cached, read-only, monitored, multi-layer filesystem
+```
+
+### Interface Compatibility
+
+UnionFS implements:
+- **afero.Fs** - Compatible with afero ecosystem
+- **absfs.Filer** - Minimal absfs interface (8 core methods)
+- **absfs.FileSystem** - Via `FileSystem()` method (adds working directory, convenience methods)
+
+```go
+// Use as afero.Fs
+data, _ := afero.ReadFile(ufs, "/path/to/file")
+
+// Use as absfs.FileSystem
+fs := ufs.FileSystem()
+fs.Chdir("/app")
+file, _ := fs.Open("config.yml") // Relative path support
+```
+
+### Examples
+
+See [examples/absfs-composition](examples/absfs-composition) for detailed composability examples.
 
 ## Related Projects
 
