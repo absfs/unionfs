@@ -38,17 +38,8 @@ type UnionFS struct {
 	layers         []*Layer // ordered from top (highest precedence) to bottom
 	writableLayer  *Layer   // reference to the writable layer (if any)
 	mu             sync.RWMutex
-	statCache      map[string]*cacheEntry
-	statCacheSize  int
+	cache          *Cache
 	copyBufferSize int
-}
-
-// cacheEntry stores cached file info with expiration
-type cacheEntry struct {
-	info    os.FileInfo
-	layer   int
-	expires time.Time
-	err     error
 }
 
 // Option is a functional option for configuring UnionFS
@@ -76,10 +67,16 @@ func WithReadOnlyLayer(fs afero.Fs) Option {
 // WithStatCache enables stat caching with the specified TTL
 func WithStatCache(enabled bool, ttl time.Duration) Option {
 	return func(ufs *UnionFS) {
-		if enabled {
-			ufs.statCache = make(map[string]*cacheEntry)
-			ufs.statCacheSize = 1000 // default cache size
-		}
+		negativeTTL := ttl / 2 // Negative cache expires faster
+		maxEntries := 1000
+		ufs.cache = newCache(enabled, ttl, negativeTTL, maxEntries)
+	}
+}
+
+// WithCacheConfig enables caching with custom configuration
+func WithCacheConfig(enabled bool, statTTL, negativeTTL time.Duration, maxEntries int) Option {
+	return func(ufs *UnionFS) {
+		ufs.cache = newCache(enabled, statTTL, negativeTTL, maxEntries)
 	}
 }
 
@@ -95,6 +92,7 @@ func New(opts ...Option) *UnionFS {
 	ufs := &UnionFS{
 		layers:         make([]*Layer, 0),
 		copyBufferSize: 32 * 1024, // default 32KB
+		cache:          newCache(false, 0, 0, 0), // disabled by default
 	}
 	for _, opt := range opts {
 		opt(ufs)
@@ -175,6 +173,16 @@ func (ufs *UnionFS) checkWhiteout(path string, startLayer int) bool {
 func (ufs *UnionFS) findFile(path string) (os.FileInfo, int, error) {
 	path = cleanPath(path)
 
+	// Check cache first
+	if info, layer, ok := ufs.cache.getStat(path); ok {
+		return info, layer, nil
+	}
+
+	// Check negative cache
+	if ufs.cache.isNegative(path) {
+		return nil, -1, os.ErrNotExist
+	}
+
 	ufs.mu.RLock()
 	defer ufs.mu.RUnlock()
 
@@ -186,7 +194,8 @@ func (ufs *UnionFS) findFile(path string) (os.FileInfo, int, error) {
 
 		info, err := layer.fs.Stat(path)
 		if err == nil {
-			// Found the file
+			// Found the file - cache it
+			ufs.cache.putStat(path, info, i)
 			return info, i, nil
 		}
 		if !os.IsNotExist(err) {
@@ -195,6 +204,8 @@ func (ufs *UnionFS) findFile(path string) (os.FileInfo, int, error) {
 		}
 	}
 
+	// File not found in any layer - cache negative result
+	ufs.cache.putNegative(path)
 	return nil, -1, os.ErrNotExist
 }
 
@@ -228,4 +239,26 @@ func (ufs *UnionFS) ensureDir(path string) error {
 
 	// Create directory with proper permissions
 	return layer.fs.MkdirAll(dir, 0755)
+}
+
+// InvalidateCache removes a path from the cache
+func (ufs *UnionFS) InvalidateCache(path string) {
+	path = cleanPath(path)
+	ufs.cache.invalidate(path)
+}
+
+// InvalidateCacheTree removes all cache entries under a path prefix
+func (ufs *UnionFS) InvalidateCacheTree(pathPrefix string) {
+	pathPrefix = cleanPath(pathPrefix)
+	ufs.cache.invalidateTree(pathPrefix)
+}
+
+// ClearCache removes all cache entries
+func (ufs *UnionFS) ClearCache() {
+	ufs.cache.clear()
+}
+
+// CacheStats returns cache statistics
+func (ufs *UnionFS) CacheStats() CacheStats {
+	return ufs.cache.Stats()
 }
