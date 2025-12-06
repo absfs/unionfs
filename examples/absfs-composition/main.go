@@ -11,7 +11,7 @@ import (
 )
 
 func main() {
-	fmt.Println("=== absfs Ecosystem Composability Demo ===\n")
+	fmt.Println("=== absfs Ecosystem Composability Demo ===")
 
 	// Demonstrate 1: Basic UnionFS with absfs.FileSystem interface
 	basicAbsfsExample()
