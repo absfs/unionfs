@@ -42,9 +42,14 @@ func (ufs *UnionFS) FileSystem() absfs.FileSystem {
 	return absfs.ExtendFiler(adapter)
 }
 
+// toVirtualPath converts an OS path to a virtual path (forward slashes)
+func toVirtualPath(p string) string {
+	return filepath.ToSlash(p)
+}
+
 // OpenFile implements absfs.Filer
 func (a *absFSAdapter) OpenFile(name string, flag int, perm os.FileMode) (absfs.File, error) {
-	file, err := a.ufs.OpenFile(name, flag, perm)
+	file, err := a.ufs.OpenFile(toVirtualPath(name), flag, perm)
 	if err != nil {
 		return nil, err
 	}
@@ -53,42 +58,44 @@ func (a *absFSAdapter) OpenFile(name string, flag int, perm os.FileMode) (absfs.
 
 // Mkdir implements absfs.Filer
 func (a *absFSAdapter) Mkdir(name string, perm os.FileMode) error {
-	return a.ufs.Mkdir(name, perm)
+	return a.ufs.Mkdir(toVirtualPath(name), perm)
 }
 
 // Remove implements absfs.Filer
 func (a *absFSAdapter) Remove(name string) error {
-	return a.ufs.Remove(name)
+	return a.ufs.Remove(toVirtualPath(name))
 }
 
 // Rename implements absfs.Filer
 func (a *absFSAdapter) Rename(oldpath, newpath string) error {
-	return a.ufs.Rename(oldpath, newpath)
+	return a.ufs.Rename(toVirtualPath(oldpath), toVirtualPath(newpath))
 }
 
 // Stat implements absfs.Filer
 func (a *absFSAdapter) Stat(name string) (os.FileInfo, error) {
-	return a.ufs.Stat(name)
+	return a.ufs.Stat(toVirtualPath(name))
 }
 
 // Chmod implements absfs.Filer
 func (a *absFSAdapter) Chmod(name string, mode os.FileMode) error {
-	return a.ufs.Chmod(name, mode)
+	return a.ufs.Chmod(toVirtualPath(name), mode)
 }
 
 // Chtimes implements absfs.Filer
 func (a *absFSAdapter) Chtimes(name string, atime time.Time, mtime time.Time) error {
-	return a.ufs.Chtimes(name, atime, mtime)
+	return a.ufs.Chtimes(toVirtualPath(name), atime, mtime)
 }
 
 // Chown implements absfs.Filer
 func (a *absFSAdapter) Chown(name string, uid, gid int) error {
-	return a.ufs.Chown(name, uid, gid)
+	return a.ufs.Chown(toVirtualPath(name), uid, gid)
 }
 
-// Separator returns the virtual filesystem path separator (always /)
+// Separator returns the OS-specific path separator for absfs compatibility
+// Note: internally unionfs uses forward slashes, but we report OS separator
+// so absfs.ExtendFiler does the right path normalization
 func (a *absFSAdapter) Separator() uint8 {
-	return '/'
+	return filepath.Separator
 }
 
 // ListSeparator returns the OS-specific path list separator
@@ -99,7 +106,7 @@ func (a *absFSAdapter) ListSeparator() uint8 {
 // Truncate changes the size of the named file
 func (a *absFSAdapter) Truncate(name string, size int64) error {
 	ufs := a.ufs
-	name = cleanPath(name)
+	name = cleanPath(toVirtualPath(name))
 
 	// Get writable layer
 	layer, err := ufs.getWritableLayer()
@@ -166,10 +173,9 @@ var _ io.Writer = (*unionFile)(nil)
 var _ io.Seeker = (*unionFile)(nil)
 var _ io.Closer = (*unionFile)(nil)
 
-// Name returns the file name (converted to virtual path with forward slashes)
+// Name returns the file name in OS format (as returned by afero)
 func (f *unionFile) Name() string {
-	// Convert OS path back to virtual path (forward slashes)
-	return filepath.ToSlash(f.File.Name())
+	return f.File.Name()
 }
 
 // Stat returns file info
