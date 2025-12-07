@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -148,12 +149,19 @@ func cleanPath(p string) string {
 	return cleaned
 }
 
+// toAferoPath converts a virtual path (forward slashes) to OS path for afero
+// afero.MemMapFs uses filepath internally, so we need to convert paths
+func toAferoPath(p string) string {
+	// Convert forward slashes to OS-specific separators
+	return filepath.FromSlash(p)
+}
+
 // checkWhiteout checks if a file is marked as deleted via whiteout in any layer above the given index
 func (ufs *UnionFS) checkWhiteout(p string, startLayer int) bool {
 	wPath := whiteoutPath(p)
 	for i := 0; i < startLayer; i++ {
 		layer := ufs.layers[i]
-		if _, err := layer.fs.Stat(wPath); err == nil {
+		if _, err := layer.fs.Stat(toAferoPath(wPath)); err == nil {
 			return true
 		}
 		// Check for opaque directory whiteout in parent directories
@@ -161,7 +169,7 @@ func (ufs *UnionFS) checkWhiteout(p string, startLayer int) bool {
 		dir := path.Dir(p)
 		for dir != "/" && dir != "." {
 			opaquePath := path.Join(dir, OpaqueWhiteout)
-			if _, err := layer.fs.Stat(opaquePath); err == nil {
+			if _, err := layer.fs.Stat(toAferoPath(opaquePath)); err == nil {
 				return true
 			}
 			dir = path.Dir(dir)
@@ -194,7 +202,7 @@ func (ufs *UnionFS) findFile(path string) (os.FileInfo, int, error) {
 			continue
 		}
 
-		info, err := layer.fs.Stat(path)
+		info, err := layer.fs.Stat(toAferoPath(path))
 		if err == nil {
 			// Found the file - cache it
 			ufs.cache.putStat(path, info, i)
@@ -235,12 +243,12 @@ func (ufs *UnionFS) ensureDir(p string) error {
 	}
 
 	// Check if directory already exists
-	if _, err := layer.fs.Stat(dir); err == nil {
+	if _, err := layer.fs.Stat(toAferoPath(dir)); err == nil {
 		return nil
 	}
 
 	// Create directory with proper permissions
-	return layer.fs.MkdirAll(dir, 0755)
+	return layer.fs.MkdirAll(toAferoPath(dir), 0755)
 }
 
 // InvalidateCache removes a path from the cache

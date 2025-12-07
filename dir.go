@@ -198,7 +198,7 @@ func (d *unionDir) loadEntries() error {
 		layer := d.ufs.layers[i]
 
 		// Try to read directory from this layer
-		dir, err := layer.fs.Open(d.path)
+		dir, err := layer.fs.Open(toAferoPath(d.path))
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
