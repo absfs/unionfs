@@ -24,7 +24,7 @@ func (ufs *UnionFS) Readlink(name string) (string, error) {
 		if linker, ok := layer.fs.(interface {
 			Readlink(string) (string, error)
 		}); ok {
-			target, err := linker.Readlink(name)
+			target, err := linker.Readlink(toAferoPath(name))
 			if err == nil {
 				return target, nil
 			}
@@ -54,13 +54,13 @@ func (ufs *UnionFS) Symlink(oldname, newname string) error {
 
 	// Remove whiteout if it exists
 	whiteout := whiteoutPath(newname)
-	layer.fs.Remove(whiteout)
+	layer.fs.Remove(toAferoPath(whiteout))
 
 	// Create symlink using the underlying filesystem's capability
 	if linker, ok := layer.fs.(interface {
 		Symlink(string, string) error
 	}); ok {
-		return linker.Symlink(oldname, newname)
+		return linker.Symlink(oldname, toAferoPath(newname))
 	}
 
 	// If the underlying filesystem doesn't support symlinks, return error
@@ -84,7 +84,7 @@ func (ufs *UnionFS) LstatIfPossible(name string) (os.FileInfo, bool, error) {
 		if lstater, ok := layer.fs.(interface {
 			LstatIfPossible(string) (os.FileInfo, bool, error)
 		}); ok {
-			info, supported, err := lstater.LstatIfPossible(name)
+			info, supported, err := lstater.LstatIfPossible(toAferoPath(name))
 			if err == nil {
 				return info, supported, nil
 			}
@@ -93,7 +93,7 @@ func (ufs *UnionFS) LstatIfPossible(name string) (os.FileInfo, bool, error) {
 			}
 		} else {
 			// Fall back to regular Stat if Lstat not supported
-			info, err := layer.fs.Stat(name)
+			info, err := layer.fs.Stat(toAferoPath(name))
 			if err == nil {
 				return info, false, nil
 			}

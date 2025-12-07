@@ -126,7 +126,7 @@ func (a *absFSAdapter) Truncate(name string, size int64) error {
 	}
 
 	// Open file and truncate
-	file, err := layer.fs.OpenFile(name, os.O_WRONLY, 0)
+	file, err := layer.fs.OpenFile(toAferoPath(name), os.O_WRONLY, 0)
 	if err != nil {
 		return err
 	}

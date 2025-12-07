@@ -62,7 +62,7 @@ func (ufs *UnionFS) copyUpFile(path string, info os.FileInfo) error {
 	defer srcFile.Close()
 
 	// Create destination file
-	dstFile, err := layer.fs.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	dstFile, err := layer.fs.OpenFile(toAferoPath(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
 	if err != nil {
 		return fmt.Errorf("failed to create destination file: %w", err)
 	}
@@ -75,11 +75,11 @@ func (ufs *UnionFS) copyUpFile(path string, info os.FileInfo) error {
 	}
 
 	// Preserve file metadata
-	if err := layer.fs.Chmod(path, info.Mode()); err != nil {
+	if err := layer.fs.Chmod(toAferoPath(path), info.Mode()); err != nil {
 		return fmt.Errorf("failed to set file mode: %w", err)
 	}
 
-	if err := layer.fs.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+	if err := layer.fs.Chtimes(toAferoPath(path), info.ModTime(), info.ModTime()); err != nil {
 		// Non-fatal error
 		_ = err
 	}
@@ -95,16 +95,16 @@ func (ufs *UnionFS) copyUpDir(path string, info os.FileInfo) error {
 	}
 
 	// Create directory in writable layer
-	if err := layer.fs.MkdirAll(path, info.Mode()); err != nil {
+	if err := layer.fs.MkdirAll(toAferoPath(path), info.Mode()); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
 	// Preserve directory metadata
-	if err := layer.fs.Chmod(path, info.Mode()); err != nil {
+	if err := layer.fs.Chmod(toAferoPath(path), info.Mode()); err != nil {
 		return fmt.Errorf("failed to set directory mode: %w", err)
 	}
 
-	if err := layer.fs.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+	if err := layer.fs.Chtimes(toAferoPath(path), info.ModTime(), info.ModTime()); err != nil {
 		// Non-fatal error
 		_ = err
 	}
@@ -128,7 +128,7 @@ func (ufs *UnionFS) copyUpParents(p string) error {
 			if err != nil {
 				return err
 			}
-			return layer.fs.MkdirAll(dir, 0755)
+			return layer.fs.MkdirAll(toAferoPath(dir), 0755)
 		}
 		return err
 	}
