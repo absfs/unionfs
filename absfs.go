@@ -86,9 +86,9 @@ func (a *absFSAdapter) Chown(name string, uid, gid int) error {
 	return a.ufs.Chown(name, uid, gid)
 }
 
-// Separator returns the OS-specific path separator
+// Separator returns the virtual filesystem path separator (always /)
 func (a *absFSAdapter) Separator() uint8 {
-	return filepath.Separator
+	return '/'
 }
 
 // ListSeparator returns the OS-specific path list separator
@@ -166,9 +166,10 @@ var _ io.Writer = (*unionFile)(nil)
 var _ io.Seeker = (*unionFile)(nil)
 var _ io.Closer = (*unionFile)(nil)
 
-// Name returns the file name
+// Name returns the file name (converted to virtual path with forward slashes)
 func (f *unionFile) Name() string {
-	return f.File.Name()
+	// Convert OS path back to virtual path (forward slashes)
+	return filepath.ToSlash(f.File.Name())
 }
 
 // Stat returns file info
