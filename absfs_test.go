@@ -2,6 +2,7 @@ package unionfs
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/absfs/absfs"
@@ -57,7 +58,8 @@ func TestFileSystem(t *testing.T) {
 		t.Fatalf("Getwd failed: %v", err)
 	}
 
-	if cwd != "/etc" {
+	// Normalize to forward slashes for comparison (virtual paths)
+	if filepath.ToSlash(cwd) != "/etc" {
 		t.Errorf("Expected cwd=/etc, got %s", cwd)
 	}
 
@@ -292,7 +294,7 @@ func TestExtendFilerPattern(t *testing.T) {
 		t.Errorf("Getwd failed: %v", err)
 	}
 
-	if cwd != "/tmp" {
+	if filepath.ToSlash(cwd) != "/tmp" {
 		t.Errorf("cwd = %s, want /tmp", cwd)
 	}
 
@@ -305,13 +307,13 @@ func TestExtendFilerPattern(t *testing.T) {
 
 	cwd2, _ := fs2.Getwd()
 
-	if cwd2 != "/etc" {
+	if filepath.ToSlash(cwd2) != "/etc" {
 		t.Errorf("FileSystem() cwd = %s, want /etc", cwd2)
 	}
 
 	// Verify fs and fs2 are independent
 	cwd1Again, _ := fs.Getwd()
-	if cwd1Again != "/tmp" {
+	if filepath.ToSlash(cwd1Again) != "/tmp" {
 		t.Errorf("First fs cwd changed! Got %s, want /tmp", cwd1Again)
 	}
 
