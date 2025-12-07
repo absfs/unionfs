@@ -5,7 +5,7 @@ package unionfs
 import (
 	"errors"
 	"os"
-	"path/filepath"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -107,25 +107,25 @@ func (ufs *UnionFS) Name() string {
 
 // isWhiteout checks if a filename is a whiteout marker
 func isWhiteout(name string) bool {
-	base := filepath.Base(name)
+	base := path.Base(name)
 	return strings.HasPrefix(base, WhiteoutPrefix)
 }
 
 // isOpaqueWhiteout checks if a directory contains an opaque whiteout marker
 func isOpaqueWhiteout(name string) bool {
-	return filepath.Base(name) == OpaqueWhiteout
+	return path.Base(name) == OpaqueWhiteout
 }
 
 // whiteoutPath returns the whiteout path for a given file path
-func whiteoutPath(path string) string {
-	dir := filepath.Dir(path)
-	base := filepath.Base(path)
-	return filepath.Join(dir, WhiteoutPrefix+base)
+func whiteoutPath(p string) string {
+	dir := path.Dir(p)
+	base := path.Base(p)
+	return path.Join(dir, WhiteoutPrefix+base)
 }
 
 // originalPath returns the original path from a whiteout path
 func originalPath(whiteoutPath string) (string, bool) {
-	base := filepath.Base(whiteoutPath)
+	base := path.Base(whiteoutPath)
 	if !strings.HasPrefix(base, WhiteoutPrefix) {
 		return "", false
 	}
@@ -133,36 +133,38 @@ func originalPath(whiteoutPath string) (string, bool) {
 	if original == "__dir_opaque" {
 		return "", false
 	}
-	dir := filepath.Dir(whiteoutPath)
-	return filepath.Join(dir, original), true
+	dir := path.Dir(whiteoutPath)
+	return path.Join(dir, original), true
 }
 
-// cleanPath normalizes a path
-func cleanPath(path string) string {
-	cleaned := filepath.Clean(path)
-	// Ensure paths are absolute or start with /
-	if !filepath.IsAbs(cleaned) && !strings.HasPrefix(cleaned, "/") {
+// cleanPath normalizes a virtual filesystem path using forward slashes
+func cleanPath(p string) string {
+	// Use path.Clean for virtual paths (always uses forward slashes)
+	cleaned := path.Clean(p)
+	// Ensure paths are absolute (start with /)
+	if !strings.HasPrefix(cleaned, "/") {
 		cleaned = "/" + cleaned
 	}
 	return cleaned
 }
 
 // checkWhiteout checks if a file is marked as deleted via whiteout in any layer above the given index
-func (ufs *UnionFS) checkWhiteout(path string, startLayer int) bool {
-	wPath := whiteoutPath(path)
+func (ufs *UnionFS) checkWhiteout(p string, startLayer int) bool {
+	wPath := whiteoutPath(p)
 	for i := 0; i < startLayer; i++ {
 		layer := ufs.layers[i]
 		if _, err := layer.fs.Stat(wPath); err == nil {
 			return true
 		}
 		// Check for opaque directory whiteout in parent directories
-		dir := filepath.Dir(path)
+		// Use path package for virtual paths (forward slashes)
+		dir := path.Dir(p)
 		for dir != "/" && dir != "." {
-			opaquePath := filepath.Join(dir, OpaqueWhiteout)
+			opaquePath := path.Join(dir, OpaqueWhiteout)
 			if _, err := layer.fs.Stat(opaquePath); err == nil {
 				return true
 			}
-			dir = filepath.Dir(dir)
+			dir = path.Dir(dir)
 		}
 	}
 	return false
@@ -221,13 +223,13 @@ func (ufs *UnionFS) getWritableLayer() (*Layer, error) {
 }
 
 // ensureDir ensures all parent directories exist in the writable layer
-func (ufs *UnionFS) ensureDir(path string) error {
+func (ufs *UnionFS) ensureDir(p string) error {
 	layer, err := ufs.getWritableLayer()
 	if err != nil {
 		return err
 	}
 
-	dir := filepath.Dir(path)
+	dir := path.Dir(p)
 	if dir == "/" || dir == "." {
 		return nil
 	}
