@@ -371,8 +371,8 @@ func TestUnionFileName(t *testing.T) {
 	defer file.Close()
 
 	// Get underlying unionFile wrapper (unwrap from ExtendSeekable)
-	// The Name() method should return the file name
-	if file.Name() != "/test.txt" {
+	// The Name() method should return the file name (normalize for cross-platform)
+	if filepath.ToSlash(file.Name()) != "/test.txt" {
 		t.Errorf("got %q, want /test.txt", file.Name())
 	}
 }
@@ -1355,7 +1355,8 @@ func TestFollowSymlinks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved != "/test.txt" {
+	// Normalize for cross-platform comparison
+	if filepath.ToSlash(resolved) != "/test.txt" {
 		t.Errorf("got %q, want /test.txt", resolved)
 	}
 }
