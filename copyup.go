@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+	"path"
 )
 
 // copyUp copies a file from a lower layer to the writable layer
@@ -113,8 +113,8 @@ func (ufs *UnionFS) copyUpDir(path string, info os.FileInfo) error {
 }
 
 // copyUpParents ensures all parent directories exist in the writable layer
-func (ufs *UnionFS) copyUpParents(path string) error {
-	dir := filepath.Dir(path)
+func (ufs *UnionFS) copyUpParents(p string) error {
+	dir := path.Dir(p)
 	if dir == "/" || dir == "." {
 		return nil
 	}

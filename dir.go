@@ -3,7 +3,7 @@ package unionfs
 import (
 	"io"
 	"os"
-	"path/filepath"
+	"path"
 	"sort"
 	"strings"
 
@@ -88,7 +88,7 @@ func (d *unionDir) WriteAt(p []byte, off int64) (n int, err error) {
 
 // Name returns the base name of the directory
 func (d *unionDir) Name() string {
-	return filepath.Base(d.path)
+	return path.Base(d.path)
 }
 
 // Readdir reads directory entries
@@ -181,7 +181,7 @@ func (d *unionDir) loadEntries() error {
 	isOpaque := false
 	for i := 0; i < len(d.ufs.layers); i++ {
 		layer := d.ufs.layers[i]
-		opaquePath := filepath.Join(d.path, OpaqueWhiteout)
+		opaquePath := path.Join(d.path, OpaqueWhiteout)
 		if _, err := layer.fs.Stat(opaquePath); err == nil {
 			isOpaque = true
 			break
@@ -222,8 +222,8 @@ func (d *unionDir) loadEntries() error {
 			// Check if this is a whiteout file
 			if isWhiteout(name) {
 				// Mark the original file as whited out
-				if original, ok := originalPath(filepath.Join(d.path, name)); ok {
-					whiteouts[filepath.Base(original)] = true
+				if original, ok := originalPath(path.Join(d.path, name)); ok {
+					whiteouts[path.Base(original)] = true
 				}
 				continue
 			}

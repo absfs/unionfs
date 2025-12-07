@@ -2,7 +2,7 @@ package unionfs
 
 import (
 	"os"
-	"path/filepath"
+	"path"
 	"strings"
 )
 
@@ -118,35 +118,35 @@ func (ufs *UnionFS) SymlinkIfPossible(oldname, newname string) error {
 
 // resolveSymlink resolves a symlink path within the union filesystem
 // This is used internally to follow symlinks during path resolution
-func (ufs *UnionFS) resolveSymlink(path string, maxDepth int) (string, error) {
+func (ufs *UnionFS) resolveSymlink(p string, maxDepth int) (string, error) {
 	if maxDepth <= 0 {
 		return "", os.ErrInvalid // Too many symbolic links
 	}
 
-	info, supported, err := ufs.LstatIfPossible(path)
+	info, supported, err := ufs.LstatIfPossible(p)
 	if err != nil {
 		return "", err
 	}
 
 	// If not a symlink or Lstat not supported, return as-is
 	if !supported || info.Mode()&os.ModeSymlink == 0 {
-		return path, nil
+		return p, nil
 	}
 
 	// Read the symlink target
-	target, err := ufs.Readlink(path)
+	target, err := ufs.Readlink(p)
 	if err != nil {
 		return "", err
 	}
 
 	// Handle absolute vs relative symlinks
 	var resolved string
-	if filepath.IsAbs(target) {
+	if path.IsAbs(target) {
 		resolved = target
 	} else {
 		// Relative symlink - resolve relative to parent directory
-		dir := filepath.Dir(path)
-		resolved = filepath.Join(dir, target)
+		dir := path.Dir(p)
+		resolved = path.Join(dir, target)
 	}
 
 	resolved = cleanPath(resolved)
@@ -162,16 +162,16 @@ func (ufs *UnionFS) followSymlinks(path string) (string, error) {
 }
 
 // isSymlinkLoop detects if following a symlink would create a loop
-func isSymlinkLoop(path, target string, visited map[string]bool) bool {
+func isSymlinkLoop(p, target string, visited map[string]bool) bool {
 	// Clean and normalize both paths
-	path = cleanPath(path)
+	p = cleanPath(p)
 
 	var resolvedTarget string
-	if filepath.IsAbs(target) {
+	if path.IsAbs(target) {
 		resolvedTarget = cleanPath(target)
 	} else {
-		dir := filepath.Dir(path)
-		resolvedTarget = cleanPath(filepath.Join(dir, target))
+		dir := path.Dir(p)
+		resolvedTarget = cleanPath(path.Join(dir, target))
 	}
 
 	// Check if we've already visited this path

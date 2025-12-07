@@ -2,7 +2,7 @@ package unionfs
 
 import (
 	"os"
-	"path/filepath"
+	"path"
 	"time"
 
 	"github.com/spf13/afero"
@@ -125,7 +125,7 @@ func (ufs *UnionFS) MkdirAll(name string, perm os.FileMode) error {
 	parts := splitPath(name)
 	current := "/"
 	for _, part := range parts {
-		current = filepath.Join(current, part)
+		current = path.Join(current, part)
 		whiteout := whiteoutPath(current)
 		layer.fs.Remove(whiteout)
 	}
@@ -360,22 +360,23 @@ func (ufs *UnionFS) Chtimes(name string, atime, mtime time.Time) error {
 }
 
 // splitPath splits a path into components
-func splitPath(path string) []string {
-	path = cleanPath(path)
-	if path == "/" {
+func splitPath(p string) []string {
+	p = cleanPath(p)
+	if p == "/" {
 		return []string{}
 	}
-	path = filepath.Clean(path)
-	return splitPathHelper(path)
+	// Use path.Clean for virtual paths
+	p = path.Clean(p)
+	return splitPathHelper(p)
 }
 
-func splitPathHelper(path string) []string {
-	if path == "/" || path == "." {
+func splitPathHelper(p string) []string {
+	if p == "/" || p == "." {
 		return []string{}
 	}
-	dir, file := filepath.Split(path)
+	dir, file := path.Split(p)
 	if dir == "" || dir == "/" {
 		return []string{file}
 	}
-	return append(splitPathHelper(filepath.Clean(dir)), file)
+	return append(splitPathHelper(path.Clean(dir)), file)
 }
