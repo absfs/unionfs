@@ -1,5 +1,10 @@
 # UnionFS - Multi-Layer Filesystem Composition
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/absfs/unionfs.svg)](https://pkg.go.dev/github.com/absfs/unionfs)
+[![Go Report Card](https://goreportcard.com/badge/github.com/absfs/unionfs)](https://goreportcard.com/report/github.com/absfs/unionfs)
+[![CI](https://github.com/absfs/unionfs/actions/workflows/ci.yml/badge.svg)](https://github.com/absfs/unionfs/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A layered filesystem implementation for Go providing Docker-style overlay filesystem capabilities with copy-on-write support.
 
 ## Overview
