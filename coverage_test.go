@@ -4,7 +4,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -624,15 +623,14 @@ func TestCacheClear(t *testing.T) {
 
 // TestCacheZeroTTL tests cache with zero TTL (effectively disabled per-request)
 func TestCacheZeroTTL(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Skipping timing-sensitive test on Windows")
-	}
-
 	cache := newCache(true, 0, 0, 100)
 
 	cache.putStat("/test", &mockFileInfo{name: "test"}, 0)
 
 	// With zero TTL, cache entry should be immediately expired
+	// Add a tiny sleep to ensure time.Now() advances past the expiry time
+	time.Sleep(1 * time.Millisecond)
+
 	_, _, ok := cache.getStat("/test")
 	if ok {
 		t.Error("cache entry with zero TTL should be expired")
