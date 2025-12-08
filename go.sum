@@ -2,5 +2,9 @@ github.com/absfs/absfs v0.0.0-20251208163131-5313f0098c48 h1:nUQw4F4hz83UsJfVSnY
 github.com/absfs/absfs v0.0.0-20251208163131-5313f0098c48/go.mod h1:IvFD36FQcMxLLZNhs2Lms+Uosc0G3AJ2JHOJIz8E5d8=
 github.com/absfs/fstesting v0.0.0-20251207001735-c9d62652ff82 h1:mcVMad1EpGeEUdOWws9Ui/2iV1z9FQhA6K2OuSPEWMI=
 github.com/absfs/fstesting v0.0.0-20251207001735-c9d62652ff82/go.mod h1:k+GNl+VG/teXQBkCH5vt+gzPtkDCQTjX+hTgpDnnqEs=
+github.com/absfs/inode v0.0.0-20251208170702-9db24ab95ae4 h1:on/poHeOcUsAivcRifj/YVn3KW42mcvGuwIcwY0laTA=
+github.com/absfs/inode v0.0.0-20251208170702-9db24ab95ae4/go.mod h1:98Uz4QOknMBXXWwXUIs2TzSwuz+9mbSAKASbwF1eld8=
 github.com/absfs/lockfs v0.0.0-20251124210544-241704814c03 h1:CnVf8nV/DHhbspnqdiF/KYcenfIDT4zcNhJY7w3PdUE=
 github.com/absfs/lockfs v0.0.0-20251124210544-241704814c03/go.mod h1:HVN3eRlj4K900z7171bfd7cUM2iyUM8q0YetQDgfbOY=
+github.com/absfs/memfs v0.0.0-20251208172314-c3af0b857987 h1:uq8xnEFLtRJQnTvpEsHY9THTRbG2UraU9vK3OKqGnXE=
+github.com/absfs/memfs v0.0.0-20251208172314-c3af0b857987/go.mod h1:dWXSbjtZMhv7kAvIWSTciq9bq8r4Ez74uGqpKQ9DAc8=
