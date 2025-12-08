@@ -2,7 +2,6 @@ package unionfs
 
 import (
 	"os"
-	"runtime"
 	"testing"
 
 	"github.com/absfs/absfs"
@@ -29,9 +28,6 @@ func TestAbsFSInterface(t *testing.T) {
 
 // TestFileSystem verifies FileSystem() returns working absfs.FileSystem
 func TestFileSystem(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Skipping on Windows - memfs returns Windows-style paths")
-	}
 	overlay := mustNewMemFS()
 	base := mustNewMemFS()
 
@@ -85,10 +81,8 @@ func TestFileSystem(t *testing.T) {
 }
 
 // TestSeparators tests Separator and ListSeparator methods
+// All absfs filesystems use Unix-style separators regardless of platform
 func TestSeparators(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Skipping on Windows - separator expectations differ")
-	}
 	overlay := mustNewMemFS()
 	base := mustNewMemFS()
 
@@ -114,12 +108,13 @@ func TestSeparators(t *testing.T) {
 	sep := sp.Separator()
 	listSep := sp.ListSeparator()
 
-	if sep != os.PathSeparator {
-		t.Errorf("Separator() = %c, want %c", sep, os.PathSeparator)
+	// absfs uses Unix-style separators on all platforms
+	if sep != '/' {
+		t.Errorf("Separator() = %c, want /", sep)
 	}
 
-	if listSep != os.PathListSeparator {
-		t.Errorf("ListSeparator() = %c, want %c", listSep, os.PathListSeparator)
+	if listSep != ':' {
+		t.Errorf("ListSeparator() = %c, want :", listSep)
 	}
 
 	t.Logf("✓ Separator=%c, ListSeparator=%c", sep, listSep)
@@ -214,9 +209,6 @@ func TestTruncateWithCopyOnWrite(t *testing.T) {
 
 // TestAbsFSComposability demonstrates composing with absfs patterns
 func TestAbsFSComposability(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Skipping on Windows - memfs path handling differs")
-	}
 	overlay := mustNewMemFS()
 	base := mustNewMemFS()
 
@@ -271,9 +263,6 @@ func TestAbsFSComposability(t *testing.T) {
 
 // TestExtendFilerPattern verifies ExtendFiler provides additional methods
 func TestExtendFilerPattern(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Skipping on Windows - memfs path handling differs")
-	}
 	overlay := mustNewMemFS()
 	base := mustNewMemFS()
 
