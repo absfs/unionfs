@@ -569,8 +569,6 @@ func TestNoWritableLayer(t *testing.T) {
 
 // TestOpenForAppend tests opening a file for append
 func TestOpenForAppend(t *testing.T) {
-	t.Skip("memfs does not currently support O_APPEND mode correctly")
-
 	baseLayer := mustNewMemFS()
 	overlay := mustNewMemFS()
 

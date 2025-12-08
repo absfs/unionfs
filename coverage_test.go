@@ -1186,8 +1186,6 @@ func TestCopyUpParentsNonExistent(t *testing.T) {
 
 // TestCopyUpLargeFile tests copying up large files
 func TestCopyUpLargeFile(t *testing.T) {
-	t.Skip("memfs does not currently support O_APPEND mode correctly")
-
 	overlay := mustNewMemFS()
 	base := mustNewMemFS()
 
