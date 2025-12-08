@@ -1,5 +1,5 @@
-github.com/absfs/absfs v0.0.0-20251208163131-5313f0098c48 h1:nUQw4F4hz83UsJfVSnYrLJW67mpY92DS6aNtgtX5X/M=
-github.com/absfs/absfs v0.0.0-20251208163131-5313f0098c48/go.mod h1:IvFD36FQcMxLLZNhs2Lms+Uosc0G3AJ2JHOJIz8E5d8=
+github.com/absfs/absfs v0.0.0-20251208232938-aa0ca30de832 h1:P5LMSom404F0BqVAudKbAcjBQn4iI1EsqOfTLtcayqU=
+github.com/absfs/absfs v0.0.0-20251208232938-aa0ca30de832/go.mod h1:IvFD36FQcMxLLZNhs2Lms+Uosc0G3AJ2JHOJIz8E5d8=
 github.com/absfs/fstesting v0.0.0-20251207001735-c9d62652ff82 h1:mcVMad1EpGeEUdOWws9Ui/2iV1z9FQhA6K2OuSPEWMI=
 github.com/absfs/fstesting v0.0.0-20251207001735-c9d62652ff82/go.mod h1:k+GNl+VG/teXQBkCH5vt+gzPtkDCQTjX+hTgpDnnqEs=
 github.com/absfs/inode v0.0.0-20251208170702-9db24ab95ae4 h1:on/poHeOcUsAivcRifj/YVn3KW42mcvGuwIcwY0laTA=
