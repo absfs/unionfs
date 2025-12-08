@@ -7,22 +7,22 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/spf13/afero"
+	"github.com/absfs/absfs"
 )
 
-// unionDir implements afero.File for directories, merging contents across layers
+// unionDir implements absfs.File for directories, merging contents across layers
 type unionDir struct {
 	ufs        *UnionFS
 	path       string
 	entries    []os.FileInfo
 	offset     int
-	baseLayer  afero.Fs
+	baseLayer  absfs.FileSystem
 	layerIdx   int
 	closed     bool
 }
 
 // newUnionDir creates a new union directory
-func newUnionDir(ufs *UnionFS, path string, baseLayer afero.Fs, layerIdx int) (*unionDir, error) {
+func newUnionDir(ufs *UnionFS, path string, baseLayer absfs.FileSystem, layerIdx int) (*unionDir, error) {
 	return &unionDir{
 		ufs:       ufs,
 		path:      path,
@@ -198,7 +198,7 @@ func (d *unionDir) loadEntries() error {
 		layer := d.ufs.layers[i]
 
 		// Try to read directory from this layer
-		dir, err := layer.fs.Open(toAferoPath(d.path))
+		dir, err := layer.fs.Open(d.path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue

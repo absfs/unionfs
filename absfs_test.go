@@ -2,17 +2,15 @@ package unionfs
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/absfs/absfs"
-	"github.com/spf13/afero"
 )
 
 // TestAbsFSInterface verifies UnionFS can provide absfs.FileSystem
 func TestAbsFSInterface(t *testing.T) {
-	overlay := afero.NewMemMapFs()
-	base := afero.NewMemMapFs()
+	overlay := mustNewMemFS()
+	base := mustNewMemFS()
 
 	ufs := New(
 		WithWritableLayer(overlay),
@@ -30,11 +28,11 @@ func TestAbsFSInterface(t *testing.T) {
 
 // TestFileSystem verifies FileSystem() returns working absfs.FileSystem
 func TestFileSystem(t *testing.T) {
-	overlay := afero.NewMemMapFs()
-	base := afero.NewMemMapFs()
+	overlay := mustNewMemFS()
+	base := mustNewMemFS()
 
 	// Setup base layer
-	afero.WriteFile(base, "/etc/config.yml", []byte("base: config"), 0644)
+	writeFile(base, "/etc/config.yml", []byte("base: config"), 0644)
 
 	ufs := New(
 		WithWritableLayer(overlay),
@@ -58,8 +56,8 @@ func TestFileSystem(t *testing.T) {
 		t.Fatalf("Getwd failed: %v", err)
 	}
 
-	// Normalize to forward slashes for comparison (virtual paths)
-	if filepath.ToSlash(cwd) != "/etc" {
+	// Virtual paths always use forward slashes
+	if cwd != "/etc" {
 		t.Errorf("Expected cwd=/etc, got %s", cwd)
 	}
 
@@ -84,8 +82,8 @@ func TestFileSystem(t *testing.T) {
 
 // TestSeparators tests Separator and ListSeparator methods
 func TestSeparators(t *testing.T) {
-	overlay := afero.NewMemMapFs()
-	base := afero.NewMemMapFs()
+	overlay := mustNewMemFS()
+	base := mustNewMemFS()
 
 	ufs := New(
 		WithWritableLayer(overlay),
@@ -122,8 +120,8 @@ func TestSeparators(t *testing.T) {
 
 // TestTruncate tests the Truncate method via FileSystem interface
 func TestTruncate(t *testing.T) {
-	overlay := afero.NewMemMapFs()
-	base := afero.NewMemMapFs()
+	overlay := mustNewMemFS()
+	base := mustNewMemFS()
 
 	ufs := New(
 		WithWritableLayer(overlay),
@@ -131,7 +129,7 @@ func TestTruncate(t *testing.T) {
 	)
 
 	// Create a file with content
-	err := afero.WriteFile(ufs, "/test.txt", []byte("Hello, World!"), 0644)
+	err := writeFile(ufs, "/test.txt", []byte("Hello, World!"), 0644)
 	if err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
@@ -158,7 +156,7 @@ func TestTruncate(t *testing.T) {
 	}
 
 	// Verify truncated content
-	content, _ := afero.ReadFile(ufs, "/test.txt")
+	content, _ := readFile(ufs, "/test.txt")
 	if string(content) != "Hello" {
 		t.Errorf("Truncated content = '%s', want 'Hello'", content)
 	}
@@ -168,11 +166,11 @@ func TestTruncate(t *testing.T) {
 
 // TestTruncateWithCopyOnWrite tests truncate triggers copy-on-write
 func TestTruncateWithCopyOnWrite(t *testing.T) {
-	overlay := afero.NewMemMapFs()
-	base := afero.NewMemMapFs()
+	overlay := mustNewMemFS()
+	base := mustNewMemFS()
 
 	// Create file in base layer
-	afero.WriteFile(base, "/base.txt", []byte("Base layer content"), 0644)
+	writeFile(base, "/base.txt", []byte("Base layer content"), 0644)
 
 	ufs := New(
 		WithWritableLayer(overlay),
@@ -209,12 +207,12 @@ func TestTruncateWithCopyOnWrite(t *testing.T) {
 
 // TestAbsFSComposability demonstrates composing with absfs patterns
 func TestAbsFSComposability(t *testing.T) {
-	overlay := afero.NewMemMapFs()
-	base := afero.NewMemMapFs()
+	overlay := mustNewMemFS()
+	base := mustNewMemFS()
 
 	// Setup test data
-	afero.WriteFile(base, "/app/config.yml", []byte("app: settings"), 0644)
-	afero.WriteFile(base, "/app/data.json", []byte("{}"), 0644)
+	writeFile(base, "/app/config.yml", []byte("app: settings"), 0644)
+	writeFile(base, "/app/data.json", []byte("{}"), 0644)
 
 	// Create UnionFS
 	ufs := New(
@@ -263,8 +261,8 @@ func TestAbsFSComposability(t *testing.T) {
 
 // TestExtendFilerPattern verifies ExtendFiler provides additional methods
 func TestExtendFilerPattern(t *testing.T) {
-	overlay := afero.NewMemMapFs()
-	base := afero.NewMemMapFs()
+	overlay := mustNewMemFS()
+	base := mustNewMemFS()
 
 	ufs := New(
 		WithWritableLayer(overlay),
@@ -294,7 +292,7 @@ func TestExtendFilerPattern(t *testing.T) {
 		t.Errorf("Getwd failed: %v", err)
 	}
 
-	if filepath.ToSlash(cwd) != "/tmp" {
+	if cwd != "/tmp" {
 		t.Errorf("cwd = %s, want /tmp", cwd)
 	}
 
@@ -307,13 +305,13 @@ func TestExtendFilerPattern(t *testing.T) {
 
 	cwd2, _ := fs2.Getwd()
 
-	if filepath.ToSlash(cwd2) != "/etc" {
+	if cwd2 != "/etc" {
 		t.Errorf("FileSystem() cwd = %s, want /etc", cwd2)
 	}
 
 	// Verify fs and fs2 are independent
 	cwd1Again, _ := fs.Getwd()
-	if filepath.ToSlash(cwd1Again) != "/tmp" {
+	if cwd1Again != "/tmp" {
 		t.Errorf("First fs cwd changed! Got %s, want /tmp", cwd1Again)
 	}
 
@@ -322,8 +320,8 @@ func TestExtendFilerPattern(t *testing.T) {
 
 // TestTruncateDirectory verifies truncate fails on directories
 func TestTruncateDirectory(t *testing.T) {
-	overlay := afero.NewMemMapFs()
-	base := afero.NewMemMapFs()
+	overlay := mustNewMemFS()
+	base := mustNewMemFS()
 
 	ufs := New(
 		WithWritableLayer(overlay),
@@ -352,10 +350,10 @@ func TestTruncateDirectory(t *testing.T) {
 
 // BenchmarkFileSystemVsDirectAccess compares absfs.FileSystem vs direct access
 func BenchmarkFileSystemVsDirectAccess(b *testing.B) {
-	overlay := afero.NewMemMapFs()
-	base := afero.NewMemMapFs()
+	overlay := mustNewMemFS()
+	base := mustNewMemFS()
 
-	afero.WriteFile(base, "/bench/file.txt", []byte("benchmark data"), 0644)
+	writeFile(base, "/bench/file.txt", []byte("benchmark data"), 0644)
 
 	ufs := New(
 		WithWritableLayer(overlay),

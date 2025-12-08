@@ -4,16 +4,14 @@ import (
 	"fmt"
 	"testing"
 	"time"
-
-	"github.com/spf13/afero"
 )
 
 // TestCacheInvalidation tests that cache is properly invalidated on writes
 func TestCacheInvalidation(t *testing.T) {
-	baseLayer := afero.NewMemMapFs()
-	overlay := afero.NewMemMapFs()
+	baseLayer := mustNewMemFS()
+	overlay := mustNewMemFS()
 
-	afero.WriteFile(baseLayer, "/test.txt", []byte("original"), 0644)
+	writeFile(baseLayer, "/test.txt", []byte("original"), 0644)
 
 	ufs := New(
 		WithWritableLayer(overlay),
@@ -28,7 +26,7 @@ func TestCacheInvalidation(t *testing.T) {
 	}
 
 	// Modify file
-	afero.WriteFile(ufs, "/test.txt", []byte("modified content"), 0644)
+	writeFile(ufs, "/test.txt", []byte("modified content"), 0644)
 
 	// Second read - cache should be invalidated, should get new info
 	info2, err := ufs.Stat("/test.txt")
@@ -44,11 +42,11 @@ func TestCacheInvalidation(t *testing.T) {
 
 // TestSymlinkBasic tests basic symlink functionality
 func TestSymlinkBasic(t *testing.T) {
-	baseLayer := afero.NewMemMapFs()
-	overlay := afero.NewMemMapFs()
+	baseLayer := mustNewMemFS()
+	overlay := mustNewMemFS()
 
 	// Create target file
-	afero.WriteFile(baseLayer, "/target.txt", []byte("target content"), 0644)
+	writeFile(baseLayer, "/target.txt", []byte("target content"), 0644)
 
 	ufs := New(
 		WithWritableLayer(overlay),
@@ -76,21 +74,21 @@ func TestSymlinkBasic(t *testing.T) {
 func TestComplexLayerHierarchy(t *testing.T) {
 	// Simulate a Docker-like setup
 	// Layer 0 (bottom): Base OS files
-	baseOS := afero.NewMemMapFs()
-	afero.WriteFile(baseOS, "/bin/sh", []byte("shell"), 0755)
-	afero.WriteFile(baseOS, "/etc/passwd", []byte("root:x:0:0"), 0644)
+	baseOS := mustNewMemFS()
+	writeFile(baseOS, "/bin/sh", []byte("shell"), 0755)
+	writeFile(baseOS, "/etc/passwd", []byte("root:x:0:0"), 0644)
 
 	// Layer 1: Runtime dependencies
-	runtime := afero.NewMemMapFs()
-	afero.WriteFile(runtime, "/lib/libc.so", []byte("libc"), 0755)
+	runtime := mustNewMemFS()
+	writeFile(runtime, "/lib/libc.so", []byte("libc"), 0755)
 
 	// Layer 2: Application
-	app := afero.NewMemMapFs()
-	afero.WriteFile(app, "/app/server", []byte("server binary"), 0755)
-	afero.WriteFile(app, "/etc/app.conf", []byte("app config"), 0644)
+	app := mustNewMemFS()
+	writeFile(app, "/app/server", []byte("server binary"), 0755)
+	writeFile(app, "/etc/app.conf", []byte("app config"), 0644)
 
 	// Layer 3: User customizations (writable)
-	custom := afero.NewMemMapFs()
+	custom := mustNewMemFS()
 
 	ufs := New(
 		WithWritableLayer(custom),
@@ -111,7 +109,7 @@ func TestComplexLayerHierarchy(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		data, err := afero.ReadFile(ufs, tt.path)
+		data, err := readFile(ufs, tt.path)
 		if err != nil {
 			t.Errorf("failed to read %s: %v", tt.path, err)
 			continue
@@ -122,10 +120,10 @@ func TestComplexLayerHierarchy(t *testing.T) {
 	}
 
 	// Override base OS file in custom layer
-	afero.WriteFile(ufs, "/etc/passwd", []byte("root:x:0:0\nuser:x:1000:1000"), 0644)
+	writeFile(ufs, "/etc/passwd", []byte("root:x:0:0\nuser:x:1000:1000"), 0644)
 
 	// Should read modified version
-	data, err := afero.ReadFile(ufs, "/etc/passwd")
+	data, err := readFile(ufs, "/etc/passwd")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +133,7 @@ func TestComplexLayerHierarchy(t *testing.T) {
 	}
 
 	// Base layer should be unchanged
-	data, err = afero.ReadFile(baseOS, "/etc/passwd")
+	data, err = readFile(baseOS, "/etc/passwd")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,20 +160,20 @@ func TestComplexLayerHierarchy(t *testing.T) {
 
 // TestDirectoryMergingComplex tests complex directory merging scenarios
 func TestDirectoryMergingComplex(t *testing.T) {
-	layer0 := afero.NewMemMapFs()
-	layer1 := afero.NewMemMapFs()
-	layer2 := afero.NewMemMapFs()
-	overlay := afero.NewMemMapFs()
+	layer0 := mustNewMemFS()
+	layer1 := mustNewMemFS()
+	layer2 := mustNewMemFS()
+	overlay := mustNewMemFS()
 
 	// Create overlapping directory structures
-	afero.WriteFile(layer0, "/data/file1.txt", []byte("1"), 0644)
-	afero.WriteFile(layer0, "/data/file2.txt", []byte("2"), 0644)
-	afero.WriteFile(layer0, "/data/file3.txt", []byte("3"), 0644)
+	writeFile(layer0, "/data/file1.txt", []byte("1"), 0644)
+	writeFile(layer0, "/data/file2.txt", []byte("2"), 0644)
+	writeFile(layer0, "/data/file3.txt", []byte("3"), 0644)
 
-	afero.WriteFile(layer1, "/data/file2.txt", []byte("2-override"), 0644)
-	afero.WriteFile(layer1, "/data/file4.txt", []byte("4"), 0644)
+	writeFile(layer1, "/data/file2.txt", []byte("2-override"), 0644)
+	writeFile(layer1, "/data/file4.txt", []byte("4"), 0644)
 
-	afero.WriteFile(layer2, "/data/file5.txt", []byte("5"), 0644)
+	writeFile(layer2, "/data/file5.txt", []byte("5"), 0644)
 
 	ufs := New(
 		WithWritableLayer(overlay),
@@ -185,7 +183,7 @@ func TestDirectoryMergingComplex(t *testing.T) {
 	)
 
 	// Read merged directory
-	entries, err := afero.ReadDir(ufs, "/data")
+	entries, err := readDir(ufs, "/data")
 	if err != nil {
 		t.Fatalf("failed to read dir: %v", err)
 	}
@@ -196,7 +194,7 @@ func TestDirectoryMergingComplex(t *testing.T) {
 	}
 
 	// Check that layer precedence is respected for file2
-	data, err := afero.ReadFile(ufs, "/data/file2.txt")
+	data, err := readFile(ufs, "/data/file2.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +209,7 @@ func TestDirectoryMergingComplex(t *testing.T) {
 	}
 
 	// Read directory again
-	entries, err = afero.ReadDir(ufs, "/data")
+	entries, err = readDir(ufs, "/data")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,12 +229,12 @@ func TestDirectoryMergingComplex(t *testing.T) {
 
 // TestConcurrentAccess tests thread-safe concurrent access
 func TestConcurrentAccess(t *testing.T) {
-	baseLayer := afero.NewMemMapFs()
-	overlay := afero.NewMemMapFs()
+	baseLayer := mustNewMemFS()
+	overlay := mustNewMemFS()
 
 	// Create initial files
 	for i := 0; i < 100; i++ {
-		afero.WriteFile(baseLayer, fmt.Sprintf("/file%d.txt", i), []byte("content"), 0644)
+		writeFile(baseLayer, fmt.Sprintf("/file%d.txt", i), []byte("content"), 0644)
 	}
 
 	ufs := New(
@@ -267,10 +265,10 @@ func TestConcurrentAccess(t *testing.T) {
 
 // TestRenameAcrossLayers tests renaming files that exist in different layers
 func TestRenameAcrossLayers(t *testing.T) {
-	baseLayer := afero.NewMemMapFs()
-	overlay := afero.NewMemMapFs()
+	baseLayer := mustNewMemFS()
+	overlay := mustNewMemFS()
 
-	afero.WriteFile(baseLayer, "/old.txt", []byte("content"), 0644)
+	writeFile(baseLayer, "/old.txt", []byte("content"), 0644)
 
 	ufs := New(
 		WithWritableLayer(overlay),
@@ -289,7 +287,7 @@ func TestRenameAcrossLayers(t *testing.T) {
 	}
 
 	// New should exist in overlay
-	data, err := afero.ReadFile(ufs, "/new.txt")
+	data, err := readFile(ufs, "/new.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,10 +309,10 @@ func TestRenameAcrossLayers(t *testing.T) {
 
 // TestMetadataOperations tests Chmod, Chown, Chtimes with copy-on-write
 func TestMetadataOperations(t *testing.T) {
-	baseLayer := afero.NewMemMapFs()
-	overlay := afero.NewMemMapFs()
+	baseLayer := mustNewMemFS()
+	overlay := mustNewMemFS()
 
-	afero.WriteFile(baseLayer, "/test.txt", []byte("content"), 0644)
+	writeFile(baseLayer, "/test.txt", []byte("content"), 0644)
 
 	ufs := New(
 		WithWritableLayer(overlay),
@@ -353,10 +351,10 @@ func TestMetadataOperations(t *testing.T) {
 
 // TestCacheExpiration tests that cache entries expire correctly
 func TestCacheExpiration(t *testing.T) {
-	baseLayer := afero.NewMemMapFs()
-	overlay := afero.NewMemMapFs()
+	baseLayer := mustNewMemFS()
+	overlay := mustNewMemFS()
 
-	afero.WriteFile(baseLayer, "/test.txt", []byte("content"), 0644)
+	writeFile(baseLayer, "/test.txt", []byte("content"), 0644)
 
 	// Short TTL for testing
 	ufs := New(
@@ -394,8 +392,8 @@ func TestCacheExpiration(t *testing.T) {
 
 // TestWriteInvalidatesParentCache tests that writing a file invalidates parent directory cache
 func TestWriteInvalidatesParentCache(t *testing.T) {
-	baseLayer := afero.NewMemMapFs()
-	overlay := afero.NewMemMapFs()
+	baseLayer := mustNewMemFS()
+	overlay := mustNewMemFS()
 
 	baseLayer.MkdirAll("/dir", 0755)
 
@@ -406,7 +404,7 @@ func TestWriteInvalidatesParentCache(t *testing.T) {
 	)
 
 	// Read directory - caches empty result
-	entries, err := afero.ReadDir(ufs, "/dir")
+	entries, err := readDir(ufs, "/dir")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,12 +413,12 @@ func TestWriteInvalidatesParentCache(t *testing.T) {
 	}
 
 	// Write new file
-	afero.WriteFile(ufs, "/dir/new.txt", []byte("content"), 0644)
+	writeFile(ufs, "/dir/new.txt", []byte("content"), 0644)
 
 	// Read directory again - should see new file even with cache
 	// Note: Directory contents are not cached by our current implementation,
 	// only stat results, so this should work
-	entries, err = afero.ReadDir(ufs, "/dir")
+	entries, err = readDir(ufs, "/dir")
 	if err != nil {
 		t.Fatal(err)
 	}

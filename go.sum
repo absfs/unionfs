@@ -1,6 +1,6 @@
-github.com/absfs/absfs v0.0.0-20251123020225-d768e7374215 h1:ofbeveNhO7HTwlcPely08Q3wYAIva71Bouf7FeHsV1o=
-github.com/absfs/absfs v0.0.0-20251123020225-d768e7374215/go.mod h1:IvFD36FQcMxLLZNhs2Lms+Uosc0G3AJ2JHOJIz8E5d8=
-github.com/spf13/afero v1.15.0 h1:b/YBCLWAJdFWJTN9cLhiXXcD7mzKn9Dm86dNnfyQw1I=
-github.com/spf13/afero v1.15.0/go.mod h1:NC2ByUVxtQs4b3sIUphxK0NioZnmxgyCrfzeuq8lxMg=
-golang.org/x/text v0.28.0 h1:rhazDwis8INMIwQ4tpjLDzUhx6RlXqZNPEM0huQojng=
-golang.org/x/text v0.28.0/go.mod h1:U8nCwOR8jO/marOQ0QbDiOngZVEBB7MAiitBuMjXiNU=
+github.com/absfs/absfs v0.0.0-20251208163131-5313f0098c48 h1:nUQw4F4hz83UsJfVSnYrLJW67mpY92DS6aNtgtX5X/M=
+github.com/absfs/absfs v0.0.0-20251208163131-5313f0098c48/go.mod h1:IvFD36FQcMxLLZNhs2Lms+Uosc0G3AJ2JHOJIz8E5d8=
+github.com/absfs/fstesting v0.0.0-20251207001735-c9d62652ff82 h1:mcVMad1EpGeEUdOWws9Ui/2iV1z9FQhA6K2OuSPEWMI=
+github.com/absfs/fstesting v0.0.0-20251207001735-c9d62652ff82/go.mod h1:k+GNl+VG/teXQBkCH5vt+gzPtkDCQTjX+hTgpDnnqEs=
+github.com/absfs/lockfs v0.0.0-20251124210544-241704814c03 h1:CnVf8nV/DHhbspnqdiF/KYcenfIDT4zcNhJY7w3PdUE=
+github.com/absfs/lockfs v0.0.0-20251124210544-241704814c03/go.mod h1:HVN3eRlj4K900z7171bfd7cUM2iyUM8q0YetQDgfbOY=

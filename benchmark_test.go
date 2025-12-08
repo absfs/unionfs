@@ -5,17 +5,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/afero"
+	"github.com/absfs/absfs"
 )
 
 // BenchmarkStatWithoutCache benchmarks Stat operations without caching
 func BenchmarkStatWithoutCache(b *testing.B) {
-	baseLayer := afero.NewMemMapFs()
-	overlay := afero.NewMemMapFs()
+	baseLayer := mustNewMemFS()
+	overlay := mustNewMemFS()
 
 	// Create files in base layer
 	for i := 0; i < 100; i++ {
-		afero.WriteFile(baseLayer, fmt.Sprintf("/file%d.txt", i), []byte("content"), 0644)
+		writeFile(baseLayer, fmt.Sprintf("/file%d.txt", i), []byte("content"), 0644)
 	}
 
 	ufs := New(
@@ -34,12 +34,12 @@ func BenchmarkStatWithoutCache(b *testing.B) {
 
 // BenchmarkStatWithCache benchmarks Stat operations with caching enabled
 func BenchmarkStatWithCache(b *testing.B) {
-	baseLayer := afero.NewMemMapFs()
-	overlay := afero.NewMemMapFs()
+	baseLayer := mustNewMemFS()
+	overlay := mustNewMemFS()
 
 	// Create files in base layer
 	for i := 0; i < 100; i++ {
-		afero.WriteFile(baseLayer, fmt.Sprintf("/file%d.txt", i), []byte("content"), 0644)
+		writeFile(baseLayer, fmt.Sprintf("/file%d.txt", i), []byte("content"), 0644)
 	}
 
 	ufs := New(
@@ -59,8 +59,8 @@ func BenchmarkStatWithCache(b *testing.B) {
 
 // BenchmarkNegativeLookupWithoutCache benchmarks non-existent file lookups without cache
 func BenchmarkNegativeLookupWithoutCache(b *testing.B) {
-	baseLayer := afero.NewMemMapFs()
-	overlay := afero.NewMemMapFs()
+	baseLayer := mustNewMemFS()
+	overlay := mustNewMemFS()
 
 	ufs := New(
 		WithWritableLayer(overlay),
@@ -78,8 +78,8 @@ func BenchmarkNegativeLookupWithoutCache(b *testing.B) {
 
 // BenchmarkNegativeLookupWithCache benchmarks non-existent file lookups with cache
 func BenchmarkNegativeLookupWithCache(b *testing.B) {
-	baseLayer := afero.NewMemMapFs()
-	overlay := afero.NewMemMapFs()
+	baseLayer := mustNewMemFS()
+	overlay := mustNewMemFS()
 
 	ufs := New(
 		WithWritableLayer(overlay),
@@ -98,14 +98,14 @@ func BenchmarkNegativeLookupWithCache(b *testing.B) {
 
 // BenchmarkReadFile benchmarks reading files from base layer
 func BenchmarkReadFile(b *testing.B) {
-	baseLayer := afero.NewMemMapFs()
-	overlay := afero.NewMemMapFs()
+	baseLayer := mustNewMemFS()
+	overlay := mustNewMemFS()
 
 	content := make([]byte, 1024) // 1KB
 	for i := range content {
 		content[i] = byte(i % 256)
 	}
-	afero.WriteFile(baseLayer, "/test.txt", content, 0644)
+	writeFile(baseLayer, "/test.txt", content, 0644)
 
 	ufs := New(
 		WithWritableLayer(overlay),
@@ -114,7 +114,7 @@ func BenchmarkReadFile(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := afero.ReadFile(ufs, "/test.txt")
+		_, err := readFile(ufs, "/test.txt")
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -123,7 +123,7 @@ func BenchmarkReadFile(b *testing.B) {
 
 // BenchmarkWriteFile benchmarks writing files to overlay
 func BenchmarkWriteFile(b *testing.B) {
-	baseLayer := afero.NewMemMapFs()
+	baseLayer := mustNewMemFS()
 
 	content := make([]byte, 1024) // 1KB
 	for i := range content {
@@ -132,13 +132,13 @@ func BenchmarkWriteFile(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		overlay := afero.NewMemMapFs()
+		overlay := mustNewMemFS()
 		ufs := New(
 			WithWritableLayer(overlay),
 			WithReadOnlyLayer(baseLayer),
 		)
 
-		err := afero.WriteFile(ufs, fmt.Sprintf("/test%d.txt", i), content, 0644)
+		err := writeFile(ufs, fmt.Sprintf("/test%d.txt", i), content, 0644)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -154,10 +154,10 @@ func BenchmarkCopyOnWrite(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		baseLayer := afero.NewMemMapFs()
-		overlay := afero.NewMemMapFs()
+		baseLayer := mustNewMemFS()
+		overlay := mustNewMemFS()
 
-		afero.WriteFile(baseLayer, "/test.txt", content, 0644)
+		writeFile(baseLayer, "/test.txt", content, 0644)
 
 		ufs := New(
 			WithWritableLayer(overlay),
@@ -165,7 +165,7 @@ func BenchmarkCopyOnWrite(b *testing.B) {
 		)
 
 		// Trigger copy-on-write
-		err := afero.WriteFile(ufs, "/test.txt", []byte("modified"), 0644)
+		err := writeFile(ufs, "/test.txt", []byte("modified"), 0644)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -174,19 +174,19 @@ func BenchmarkCopyOnWrite(b *testing.B) {
 
 // BenchmarkDirectoryMerge benchmarks directory listing with merging
 func BenchmarkDirectoryMerge(b *testing.B) {
-	layer0 := afero.NewMemMapFs()
-	layer1 := afero.NewMemMapFs()
-	overlay := afero.NewMemMapFs()
+	layer0 := mustNewMemFS()
+	layer1 := mustNewMemFS()
+	overlay := mustNewMemFS()
 
 	// Create files in different layers
 	for i := 0; i < 50; i++ {
-		afero.WriteFile(layer0, fmt.Sprintf("/dir/file%d.txt", i), []byte("0"), 0644)
+		writeFile(layer0, fmt.Sprintf("/dir/file%d.txt", i), []byte("0"), 0644)
 	}
 	for i := 50; i < 100; i++ {
-		afero.WriteFile(layer1, fmt.Sprintf("/dir/file%d.txt", i), []byte("1"), 0644)
+		writeFile(layer1, fmt.Sprintf("/dir/file%d.txt", i), []byte("1"), 0644)
 	}
 	for i := 100; i < 150; i++ {
-		afero.WriteFile(overlay, fmt.Sprintf("/dir/file%d.txt", i), []byte("2"), 0644)
+		writeFile(overlay, fmt.Sprintf("/dir/file%d.txt", i), []byte("2"), 0644)
 	}
 
 	ufs := New(
@@ -197,7 +197,12 @@ func BenchmarkDirectoryMerge(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		entries, err := afero.ReadDir(ufs, "/dir")
+		dir, err := ufs.Open("/dir")
+		if err != nil {
+			b.Fatal(err)
+		}
+		entries, err := dir.Readdir(-1)
+		dir.Close()
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -214,19 +219,19 @@ func BenchmarkLayerLookupDepth(b *testing.B) {
 	for _, depth := range depths {
 		b.Run(fmt.Sprintf("Layers=%d", depth), func(b *testing.B) {
 			// Create layers
-			layers := make([]afero.Fs, depth)
+			layers := make([]interface{}, depth)
 			for i := 0; i < depth; i++ {
-				layers[i] = afero.NewMemMapFs()
+				layers[i] = mustNewMemFS()
 			}
 
 			// Put file in bottom layer
-			afero.WriteFile(layers[depth-1], "/test.txt", []byte("content"), 0644)
+			writeFile(layers[depth-1].(absfs.FileSystem), "/test.txt", []byte("content"), 0644)
 
 			// Build union with all layers
 			opts := make([]Option, 0, depth+1)
-			opts = append(opts, WithWritableLayer(afero.NewMemMapFs()))
+			opts = append(opts, WithWritableLayer(mustNewMemFS()))
 			for i := 0; i < depth; i++ {
-				opts = append(opts, WithReadOnlyLayer(layers[i]))
+				opts = append(opts, WithReadOnlyLayer(layers[i].(absfs.FileSystem)))
 			}
 
 			ufs := New(opts...)
@@ -246,8 +251,8 @@ func BenchmarkLayerLookupDepth(b *testing.B) {
 func BenchmarkMkdirAll(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		baseLayer := afero.NewMemMapFs()
-		overlay := afero.NewMemMapFs()
+		baseLayer := mustNewMemFS()
+		overlay := mustNewMemFS()
 
 		ufs := New(
 			WithWritableLayer(overlay),
@@ -263,12 +268,12 @@ func BenchmarkMkdirAll(b *testing.B) {
 
 // BenchmarkWhiteoutLookup benchmarks file lookup with whiteouts
 func BenchmarkWhiteoutLookup(b *testing.B) {
-	baseLayer := afero.NewMemMapFs()
-	overlay := afero.NewMemMapFs()
+	baseLayer := mustNewMemFS()
+	overlay := mustNewMemFS()
 
 	// Create files in base
 	for i := 0; i < 100; i++ {
-		afero.WriteFile(baseLayer, fmt.Sprintf("/file%d.txt", i), []byte("content"), 0644)
+		writeFile(baseLayer, fmt.Sprintf("/file%d.txt", i), []byte("content"), 0644)
 	}
 
 	ufs := New(

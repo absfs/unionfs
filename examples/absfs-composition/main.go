@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/absfs/memfs"
 	"github.com/absfs/unionfs"
-	"github.com/spf13/afero"
 )
 
 func main() {
@@ -28,12 +28,12 @@ func basicAbsfsExample() {
 	fmt.Println("   --------------------------------")
 
 	// Create layers
-	baseLayer := afero.NewMemMapFs()
-	overlayLayer := afero.NewMemMapFs()
+	baseLayer, err := memfs.NewFS(); if err != nil { log.Fatal(err) }
+	overlayLayer, err := memfs.NewFS(); if err != nil { log.Fatal(err) }
 
 	// Set up base layer content
-	afero.WriteFile(baseLayer, "/etc/app.conf", []byte("base-config"), 0644)
-	afero.WriteFile(baseLayer, "/usr/bin/app", []byte("#!/bin/bash\necho base"), 0755)
+	writeFile(baseLayer, "/etc/app.conf", []byte("base-config"), 0644)
+	writeFile(baseLayer, "/usr/bin/app", []byte("#!/bin/bash\necho base"), 0755)
 
 	// Create UnionFS
 	ufs := unionfs.New(
@@ -79,10 +79,10 @@ func compositionPatternExample() {
 	fmt.Println("   -------------------------------------")
 
 	// Create base UnionFS
-	baseLayer := afero.NewMemMapFs()
-	overlayLayer := afero.NewMemMapFs()
+	baseLayer, err := memfs.NewFS(); if err != nil { log.Fatal(err) }
+	overlayLayer, err := memfs.NewFS(); if err != nil { log.Fatal(err) }
 
-	afero.WriteFile(baseLayer, "/data/file.txt", []byte("important data"), 0644)
+	writeFile(baseLayer, "/data/file.txt", []byte("important data"), 0644)
 
 	ufs := unionfs.New(
 		unionfs.WithWritableLayer(overlayLayer),

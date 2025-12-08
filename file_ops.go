@@ -5,7 +5,7 @@ import (
 	"path"
 	"time"
 
-	"github.com/spf13/afero"
+	"github.com/absfs/absfs"
 )
 
 // Stat returns file info, searching through layers
@@ -22,12 +22,12 @@ func (ufs *UnionFS) Lstat(name string) (os.FileInfo, error) {
 }
 
 // Open opens a file for reading
-func (ufs *UnionFS) Open(name string) (afero.File, error) {
+func (ufs *UnionFS) Open(name string) (absfs.File, error) {
 	return ufs.OpenFile(name, os.O_RDONLY, 0)
 }
 
 // OpenFile opens a file with the specified flags and permissions
-func (ufs *UnionFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+func (ufs *UnionFS) OpenFile(name string, flag int, perm os.FileMode) (absfs.File, error) {
 	name = cleanPath(name)
 
 	// Check if this is a write operation
@@ -58,13 +58,13 @@ func (ufs *UnionFS) OpenFile(name string, flag int, perm os.FileMode) (afero.Fil
 
 		// Remove whiteout if it exists
 		whiteout := whiteoutPath(name)
-		layer.fs.Remove(toAferoPath(whiteout))
+		layer.fs.Remove(whiteout)
 
 		// Invalidate cache for this path since we're writing to it
 		ufs.InvalidateCache(name)
 
 		// Open file in writable layer
-		return layer.fs.OpenFile(toAferoPath(name), flag, perm)
+		return layer.fs.OpenFile(name, flag, perm)
 	}
 
 	// Read-only operation - find the file in layers
@@ -79,11 +79,11 @@ func (ufs *UnionFS) OpenFile(name string, flag int, perm os.FileMode) (afero.Fil
 		return newUnionDir(ufs, name, layer.fs, layerIdx)
 	}
 
-	return layer.fs.Open(toAferoPath(name))
+	return layer.fs.Open(name)
 }
 
 // Create creates a file in the writable layer
-func (ufs *UnionFS) Create(name string) (afero.File, error) {
+func (ufs *UnionFS) Create(name string) (absfs.File, error) {
 	return ufs.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
 }
 
@@ -103,9 +103,9 @@ func (ufs *UnionFS) Mkdir(name string, perm os.FileMode) error {
 
 	// Remove whiteout if it exists
 	whiteout := whiteoutPath(name)
-	layer.fs.Remove(toAferoPath(whiteout))
+	layer.fs.Remove(whiteout)
 
-	err = layer.fs.Mkdir(toAferoPath(name), perm)
+	err = layer.fs.Mkdir(name, perm)
 	if err == nil {
 		ufs.InvalidateCache(name)
 	}
@@ -127,10 +127,10 @@ func (ufs *UnionFS) MkdirAll(name string, perm os.FileMode) error {
 	for _, part := range parts {
 		current = path.Join(current, part)
 		whiteout := whiteoutPath(current)
-		layer.fs.Remove(toAferoPath(whiteout))
+		layer.fs.Remove(whiteout)
 	}
 
-	err = layer.fs.MkdirAll(toAferoPath(name), perm)
+	err = layer.fs.MkdirAll(name, perm)
 	if err == nil {
 		ufs.InvalidateCacheTree(name)
 	}
@@ -154,7 +154,7 @@ func (ufs *UnionFS) Remove(name string) error {
 
 	// If file exists in writable layer, actually delete it
 	if layerIdx == 0 {
-		if err := layer.fs.Remove(toAferoPath(name)); err != nil {
+		if err := layer.fs.Remove(name); err != nil {
 			return err
 		}
 	}
@@ -166,7 +166,7 @@ func (ufs *UnionFS) Remove(name string) error {
 			return err
 		}
 		// Create empty whiteout file
-		f, err := layer.fs.Create(toAferoPath(whiteout))
+		f, err := layer.fs.Create(whiteout)
 		if err != nil {
 			return err
 		}
@@ -194,7 +194,7 @@ func (ufs *UnionFS) RemoveAll(name string) error {
 
 	// If path exists in writable layer, remove it
 	if layerIdx == 0 {
-		if err := layer.fs.RemoveAll(toAferoPath(name)); err != nil {
+		if err := layer.fs.RemoveAll(name); err != nil {
 			return err
 		}
 	}
@@ -206,7 +206,7 @@ func (ufs *UnionFS) RemoveAll(name string) error {
 			return err
 		}
 		// Create empty whiteout file
-		f, err := layer.fs.Create(toAferoPath(whiteout))
+		f, err := layer.fs.Create(whiteout)
 		if err != nil {
 			return err
 		}
@@ -250,10 +250,10 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 
 	// Remove whiteout for new name if it exists
 	newWhiteout := whiteoutPath(newname)
-	layer.fs.Remove(toAferoPath(newWhiteout))
+	layer.fs.Remove(newWhiteout)
 
 	// Perform rename in writable layer
-	if err := layer.fs.Rename(toAferoPath(oldname), toAferoPath(newname)); err != nil {
+	if err := layer.fs.Rename(oldname, newname); err != nil {
 		return err
 	}
 
@@ -263,7 +263,7 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 		if err := ufs.ensureDir(oldWhiteout); err != nil {
 			return err
 		}
-		f, err := layer.fs.Create(toAferoPath(oldWhiteout))
+		f, err := layer.fs.Create(oldWhiteout)
 		if err != nil {
 			return err
 		}
@@ -296,7 +296,7 @@ func (ufs *UnionFS) Chmod(name string, mode os.FileMode) error {
 		}
 	}
 
-	err = layer.fs.Chmod(toAferoPath(name), mode)
+	err = layer.fs.Chmod(name, mode)
 	if err == nil {
 		ufs.InvalidateCache(name)
 	}
@@ -324,7 +324,7 @@ func (ufs *UnionFS) Chown(name string, uid, gid int) error {
 		}
 	}
 
-	err = layer.fs.Chown(toAferoPath(name), uid, gid)
+	err = layer.fs.Chown(name, uid, gid)
 	if err == nil {
 		ufs.InvalidateCache(name)
 	}
@@ -352,7 +352,7 @@ func (ufs *UnionFS) Chtimes(name string, atime, mtime time.Time) error {
 		}
 	}
 
-	err = layer.fs.Chtimes(toAferoPath(name), atime, mtime)
+	err = layer.fs.Chtimes(name, atime, mtime)
 	if err == nil {
 		ufs.InvalidateCache(name)
 	}

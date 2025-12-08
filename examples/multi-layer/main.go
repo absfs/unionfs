@@ -5,28 +5,28 @@ import (
 	"log"
 
 	"github.com/absfs/unionfs"
-	"github.com/spf13/afero"
+	"github.com/absfs/memfs"
 )
 
 func main() {
 	// Simulate a Docker-style layered filesystem
 	// Layer 0: Base OS
-	baseOS := afero.NewMemMapFs()
-	afero.WriteFile(baseOS, "/usr/bin/bash", []byte("bash binary"), 0755)
-	afero.WriteFile(baseOS, "/usr/lib/libc.so", []byte("libc library"), 0644)
+	baseOS := memfs.NewFS()
+	writeFile(baseOS, "/usr/bin/bash", []byte("bash binary"), 0755)
+	writeFile(baseOS, "/usr/lib/libc.so", []byte("libc library"), 0644)
 
 	// Layer 1: Application dependencies
-	appDeps := afero.NewMemMapFs()
-	afero.WriteFile(appDeps, "/usr/lib/libapp.so", []byte("app library"), 0644)
-	afero.WriteFile(appDeps, "/app/README.md", []byte("App docs"), 0644)
+	appDeps := memfs.NewFS()
+	writeFile(appDeps, "/usr/lib/libapp.so", []byte("app library"), 0644)
+	writeFile(appDeps, "/app/README.md", []byte("App docs"), 0644)
 
 	// Layer 2: Application code
-	appCode := afero.NewMemMapFs()
-	afero.WriteFile(appCode, "/app/main", []byte("app binary"), 0755)
-	afero.WriteFile(appCode, "/app/config/defaults.yml", []byte("defaults"), 0644)
+	appCode := memfs.NewFS()
+	writeFile(appCode, "/app/main", []byte("app binary"), 0755)
+	writeFile(appCode, "/app/config/defaults.yml", []byte("defaults"), 0644)
 
 	// Layer 3: Runtime modifications (writable)
-	runtime := afero.NewMemMapFs()
+	runtime := memfs.NewFS()
 
 	// Create union filesystem
 	ufs := unionfs.New(
@@ -40,7 +40,7 @@ func main() {
 
 	// 1. Read file from bottom layer
 	fmt.Println("1. Reading from base OS layer:")
-	data, err := afero.ReadFile(ufs, "/usr/bin/bash")
+	data, err := readFile(ufs, "/usr/bin/bash")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func main() {
 
 	// 2. Read file from middle layer
 	fmt.Println("2. Reading from app dependencies layer:")
-	data, err = afero.ReadFile(ufs, "/usr/lib/libapp.so")
+	data, err = readFile(ufs, "/usr/lib/libapp.so")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func main() {
 
 	// 4. Add runtime configuration
 	fmt.Println("4. Adding runtime configuration:")
-	err = afero.WriteFile(ufs, "/app/config/runtime.yml", []byte("runtime: config"), 0644)
+	err = writeFile(ufs, "/app/config/runtime.yml", []byte("runtime: config"), 0644)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -75,15 +75,15 @@ func main() {
 
 	// 5. Override default configuration
 	fmt.Println("5. Overriding default configuration:")
-	err = afero.WriteFile(ufs, "/app/config/defaults.yml", []byte("overridden: config"), 0644)
+	err = writeFile(ufs, "/app/config/defaults.yml", []byte("overridden: config"), 0644)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	data, _ = afero.ReadFile(ufs, "/app/config/defaults.yml")
+	data, _ = readFile(ufs, "/app/config/defaults.yml")
 	fmt.Printf("   Union view: %s\n", string(data))
 
-	data, _ = afero.ReadFile(appCode, "/app/config/defaults.yml")
+	data, _ = readFile(appCode, "/app/config/defaults.yml")
 	fmt.Printf("   Original in app layer: %s\n\n", string(data))
 
 	// 6. List merged directory
