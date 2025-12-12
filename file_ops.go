@@ -1,8 +1,12 @@
 package unionfs
 
 import (
+	"io"
+	"io/fs"
 	"os"
 	"path"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/absfs/absfs"
@@ -16,9 +20,41 @@ func (ufs *UnionFS) Stat(name string) (os.FileInfo, error) {
 
 // Lstat returns file info without following symlinks
 func (ufs *UnionFS) Lstat(name string) (os.FileInfo, error) {
-	// For now, treat Lstat the same as Stat
-	// In the future, we can add proper symlink handling
-	return ufs.Stat(name)
+	name = cleanPath(name)
+
+	ufs.mu.RLock()
+	defer ufs.mu.RUnlock()
+
+	for i, layer := range ufs.layers {
+		// Check if this file is whited out in an upper layer
+		if ufs.checkWhiteout(name, i) {
+			continue
+		}
+
+		// Try to lstat from this layer (using Lstat if available)
+		if lstater, ok := layer.fs.(interface {
+			Lstat(string) (os.FileInfo, error)
+		}); ok {
+			info, err := lstater.Lstat(name)
+			if err == nil {
+				return info, nil
+			}
+			if !os.IsNotExist(err) {
+				return nil, err
+			}
+		} else {
+			// Fallback to Stat if Lstat not available
+			info, err := layer.fs.Stat(name)
+			if err == nil {
+				return info, nil
+			}
+			if !os.IsNotExist(err) {
+				return nil, err
+			}
+		}
+	}
+
+	return nil, os.ErrNotExist
 }
 
 // Open opens a file for reading
@@ -379,4 +415,165 @@ func splitPathHelper(p string) []string {
 		return []string{file}
 	}
 	return append(splitPathHelper(path.Clean(dir)), file)
+}
+
+// ReadDir reads the named directory and returns all its directory entries,
+// merging results from all layers. Entries from upper layers take precedence,
+// and whiteouts are respected.
+func (ufs *UnionFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	name = cleanPath(name)
+
+	// Check if the directory exists in any layer
+	info, _, err := ufs.findFile(name)
+	if err != nil {
+		return nil, err
+	}
+
+	if !info.IsDir() {
+		return nil, &os.PathError{Op: "readdir", Path: name, Err: os.ErrInvalid}
+	}
+
+	seen := make(map[string]bool)
+	whiteouts := make(map[string]bool)
+	var entries []fs.DirEntry
+
+	ufs.mu.RLock()
+	defer ufs.mu.RUnlock()
+
+	// Check for opaque directory whiteout in upper layers
+	isOpaque := false
+	for i := 0; i < len(ufs.layers); i++ {
+		layer := ufs.layers[i]
+		opaquePath := path.Join(name, OpaqueWhiteout)
+		if _, err := layer.fs.Stat(opaquePath); err == nil {
+			isOpaque = true
+			break
+		}
+	}
+
+	// Iterate through all layers
+	for i := 0; i < len(ufs.layers); i++ {
+		// If we found an opaque whiteout, stop processing lower layers
+		if isOpaque && i > 0 {
+			break
+		}
+
+		layer := ufs.layers[i]
+
+		// Try to read directory from this layer using ReadDir if available
+		var layerEntries []fs.DirEntry
+		if reader, ok := layer.fs.(interface{ ReadDir(string) ([]fs.DirEntry, error) }); ok {
+			layerEntries, err = reader.ReadDir(name)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				continue
+			}
+		} else {
+			// Fallback to Open + Readdir
+			dir, err := layer.fs.Open(name)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				continue
+			}
+
+			infos, err := dir.Readdir(-1)
+			dir.Close()
+
+			if err != nil {
+				continue
+			}
+
+			// Convert FileInfo to DirEntry
+			layerEntries = make([]fs.DirEntry, len(infos))
+			for j, info := range infos {
+				layerEntries[j] = fs.FileInfoToDirEntry(info)
+			}
+		}
+
+		// Process entries from this layer
+		for _, entry := range layerEntries {
+			name := entry.Name()
+
+			// Check if this is a whiteout file
+			if isWhiteout(name) {
+				// Mark the original file as whited out
+				if original, ok := originalPath(path.Join(name, name)); ok {
+					whiteouts[path.Base(original)] = true
+				}
+				continue
+			}
+
+			// Skip opaque whiteout markers
+			if isOpaqueWhiteout(name) {
+				continue
+			}
+
+			// Skip if already seen in upper layer
+			if seen[name] {
+				continue
+			}
+
+			// Skip if whited out
+			if whiteouts[name] {
+				continue
+			}
+
+			// Add entry
+			seen[name] = true
+			entries = append(entries, entry)
+		}
+	}
+
+	// Sort entries by name
+	sort.Slice(entries, func(i, j int) bool {
+		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
+	})
+
+	return entries, nil
+}
+
+// ReadFile reads the named file and returns its contents.
+// It reads from the first layer (highest precedence) that contains the file.
+func (ufs *UnionFS) ReadFile(name string) ([]byte, error) {
+	name = cleanPath(name)
+
+	// Find the file in the layers
+	info, layerIdx, err := ufs.findFile(name)
+	if err != nil {
+		return nil, err
+	}
+
+	if info.IsDir() {
+		return nil, &os.PathError{Op: "read", Path: name, Err: os.ErrInvalid}
+	}
+
+	ufs.mu.RLock()
+	layer := ufs.layers[layerIdx]
+	ufs.mu.RUnlock()
+
+	// Try to use ReadFile if available
+	if reader, ok := layer.fs.(interface{ ReadFile(string) ([]byte, error) }); ok {
+		return reader.ReadFile(name)
+	}
+
+	// Fallback to Open + Read
+	file, err := layer.fs.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	return io.ReadAll(file)
+}
+
+// Sub returns a filesystem rooted at the given directory, creating a
+// sub-view across all layers.
+func (ufs *UnionFS) Sub(dir string) (fs.FS, error) {
+	dir = cleanPath(dir)
+	adapter := &absFSAdapter{ufs: ufs}
+	return absfs.FilerToFS(adapter, dir)
 }

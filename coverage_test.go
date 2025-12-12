@@ -1333,11 +1333,19 @@ func TestSymlinkIfPossible(t *testing.T) {
 		WithReadOnlyLayer(base),
 	)
 
-	// Should call Symlink internally
+	// Should call Symlink internally - symlinks can point to non-existent targets (broken symlinks)
 	err := ufs.SymlinkIfPossible("/target", "/link")
-	// memfs requires target to exist, so we expect an error
-	if err == nil {
-		t.Error("expected error for non-existent target")
+	if err != nil {
+		t.Errorf("SymlinkIfPossible should succeed for broken symlink: %v", err)
+	}
+
+	// Verify symlink was created
+	target, err := ufs.Readlink("/link")
+	if err != nil {
+		t.Errorf("Readlink failed: %v", err)
+	}
+	if target != "/target" {
+		t.Errorf("expected target '/target', got '%s'", target)
 	}
 }
 
@@ -2249,7 +2257,7 @@ func TestSymlinkRemovesWhiteout(t *testing.T) {
 	overlay := mustNewMemFS()
 	base := mustNewMemFS()
 
-	// Create whiteout
+	// Create whiteout for /link
 	overlay.MkdirAll("/", 0755)
 	writeFile(overlay, "/.wh.link", []byte(""), 0644)
 
@@ -2258,10 +2266,25 @@ func TestSymlinkRemovesWhiteout(t *testing.T) {
 		WithReadOnlyLayer(base),
 	)
 
-	// Symlink should try to remove whiteout (will fail since target doesn't exist)
+	// Symlink should remove whiteout and create symlink (broken symlinks are valid)
 	err := ufs.Symlink("/target", "/link")
+	if err != nil {
+		t.Errorf("Symlink failed: %v", err)
+	}
+
+	// Verify whiteout is removed
+	_, err = overlay.Stat("/.wh.link")
 	if err == nil {
-		t.Error("expected error for non-existent target")
+		t.Error("whiteout should have been removed")
+	}
+
+	// Verify symlink was created
+	target, err := ufs.Readlink("/link")
+	if err != nil {
+		t.Errorf("Readlink failed: %v", err)
+	}
+	if target != "/target" {
+		t.Errorf("expected target '/target', got '%s'", target)
 	}
 }
 

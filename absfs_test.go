@@ -80,8 +80,8 @@ func TestFileSystem(t *testing.T) {
 	t.Log("✓ FileSystem() provides working absfs.FileSystem")
 }
 
-// TestSeparators tests Separator and ListSeparator methods
-// All absfs filesystems use Unix-style separators regardless of platform
+// TestSeparators tests that Separator and ListSeparator methods are no longer present
+// These methods have been removed in absfs 1.0
 func TestSeparators(t *testing.T) {
 	overlay := mustNewMemFS()
 	base := mustNewMemFS()
@@ -91,33 +91,21 @@ func TestSeparators(t *testing.T) {
 		WithReadOnlyLayer(base),
 	)
 
-	// Get FileSystem interface to access Separator methods
+	// Get FileSystem interface
 	fs := ufs.FileSystem()
 
-	// Type assert to get access to underlying adapter
+	// Verify that Separator methods are NOT present (absfs 1.0 removed them)
 	type separatorProvider interface {
 		Separator() uint8
 		ListSeparator() uint8
 	}
 
-	sp, ok := fs.(separatorProvider)
-	if !ok {
-		t.Fatal("FileSystem doesn't provide Separator methods")
+	_, ok := fs.(separatorProvider)
+	if ok {
+		t.Fatal("FileSystem still provides Separator methods - these should be removed in absfs 1.0")
 	}
 
-	sep := sp.Separator()
-	listSep := sp.ListSeparator()
-
-	// absfs uses Unix-style separators on all platforms
-	if sep != '/' {
-		t.Errorf("Separator() = %c, want /", sep)
-	}
-
-	if listSep != ':' {
-		t.Errorf("ListSeparator() = %c, want :", listSep)
-	}
-
-	t.Logf("✓ Separator=%c, ListSeparator=%c", sep, listSep)
+	t.Log("✓ Separator methods correctly removed")
 }
 
 // TestTruncate tests the Truncate method via FileSystem interface

@@ -1,6 +1,7 @@
 package unionfs
 
 import (
+	"io/fs"
 	"os"
 	"time"
 
@@ -14,6 +15,9 @@ type absFSAdapter struct {
 
 // Ensure absFSAdapter implements absfs.Filer interface at compile time
 var _ absfs.Filer = (*absFSAdapter)(nil)
+
+// Ensure absFSAdapter implements absfs.SymLinker interface at compile time
+var _ absfs.SymLinker = (*absFSAdapter)(nil)
 
 // FileSystem returns an absfs.FileSystem view of this UnionFS.
 // The returned FileSystem maintains its own working directory state
@@ -36,6 +40,20 @@ var _ absfs.Filer = (*absFSAdapter)(nil)
 func (ufs *UnionFS) FileSystem() absfs.FileSystem {
 	adapter := &absFSAdapter{ufs: ufs}
 	return absfs.ExtendFiler(adapter)
+}
+
+// SymlinkFileSystem returns an absfs.SymlinkFileSystem view of this UnionFS.
+// The returned SymlinkFileSystem maintains its own working directory state
+// and provides the full absfs.SymlinkFileSystem interface including symlink
+// operations (Symlink, Readlink, Lstat, Lchown).
+//
+// This enables seamless integration with the absfs ecosystem when symlink
+// support is required.
+func (ufs *UnionFS) SymlinkFileSystem() absfs.SymlinkFileSystem {
+	adapter := &absFSAdapter{ufs: ufs}
+	extended := absfs.ExtendFiler(adapter)
+	// ExtendFiler returns *extendedFS which implements both FileSystem and SymLinker
+	return extended.(absfs.SymlinkFileSystem)
 }
 
 // OpenFile implements absfs.Filer
@@ -79,14 +97,20 @@ func (a *absFSAdapter) Chown(name string, uid, gid int) error {
 	return a.ufs.Chown(cleanPath(name), uid, gid)
 }
 
-// Separator returns the path separator (always forward slash for virtual paths)
-func (a *absFSAdapter) Separator() uint8 {
-	return '/'
+// ReadDir implements absfs.Filer
+func (a *absFSAdapter) ReadDir(name string) ([]fs.DirEntry, error) {
+	return a.ufs.ReadDir(cleanPath(name))
 }
 
-// ListSeparator returns the path list separator (always colon for virtual paths)
-func (a *absFSAdapter) ListSeparator() uint8 {
-	return ':'
+// ReadFile implements absfs.Filer
+func (a *absFSAdapter) ReadFile(name string) ([]byte, error) {
+	return a.ufs.ReadFile(cleanPath(name))
+}
+
+// Sub implements absfs.Filer
+func (a *absFSAdapter) Sub(dir string) (fs.FS, error) {
+	dir = cleanPath(dir)
+	return absfs.FilerToFS(a, dir)
 }
 
 // Truncate changes the size of the named file
@@ -141,6 +165,33 @@ func (a *absFSAdapter) Truncate(name string, size int64) error {
 	}
 
 	return err
+}
+
+// Lstat implements absfs.SymLinker - returns file info without following symlinks
+func (a *absFSAdapter) Lstat(name string) (os.FileInfo, error) {
+	return a.ufs.Lstat(cleanPath(name))
+}
+
+// Lchown implements absfs.SymLinker - changes ownership without following symlinks
+func (a *absFSAdapter) Lchown(name string, uid, gid int) error {
+	return a.ufs.Lchown(cleanPath(name), uid, gid)
+}
+
+// Readlink implements absfs.SymLinker - returns the target of a symlink
+func (a *absFSAdapter) Readlink(name string) (string, error) {
+	return a.ufs.Readlink(cleanPath(name))
+}
+
+// Symlink implements absfs.SymLinker - creates a symbolic link
+func (a *absFSAdapter) Symlink(oldname, newname string) error {
+	return a.ufs.Symlink(oldname, cleanPath(newname))
+}
+
+// RemoveAll removes the named file or directory and all children.
+// This method allows the adapter to use UnionFS's proper RemoveAll implementation
+// rather than the fallback in absfs.ExtendFiler.
+func (a *absFSAdapter) RemoveAll(name string) error {
+	return a.ufs.RemoveAll(cleanPath(name))
 }
 
 // AsAbsFS returns an absfs.FileSystem adapter for this UnionFS.

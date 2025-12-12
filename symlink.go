@@ -67,6 +67,59 @@ func (ufs *UnionFS) Symlink(oldname, newname string) error {
 	return os.ErrInvalid
 }
 
+// Lchown changes the ownership of a symlink (without following it)
+func (ufs *UnionFS) Lchown(name string, uid, gid int) error {
+	layer, err := ufs.getWritableLayer()
+	if err != nil {
+		return err
+	}
+
+	name = cleanPath(name)
+
+	// Get file info without following symlinks
+	info, err := ufs.Lstat(name)
+	if err != nil {
+		return err
+	}
+
+	// Find which layer has the file
+	ufs.mu.RLock()
+	layerIdx := -1
+	for i, l := range ufs.layers {
+		if ufs.checkWhiteout(name, i) {
+			continue
+		}
+		_, err := l.fs.Stat(name)
+		if err == nil {
+			layerIdx = i
+			break
+		}
+	}
+	ufs.mu.RUnlock()
+
+	// Copy up if file is in a lower layer
+	if layerIdx > 0 {
+		if err := ufs.copyUp(name, info); err != nil {
+			return err
+		}
+	}
+
+	// Try Lchown if supported, otherwise fall back to Chown
+	if lchowner, ok := layer.fs.(interface {
+		Lchown(string, int, int) error
+	}); ok {
+		err = lchowner.Lchown(name, uid, gid)
+	} else {
+		// Fallback to regular Chown - may follow symlinks on some systems
+		err = layer.fs.Chown(name, uid, gid)
+	}
+
+	if err == nil {
+		ufs.InvalidateCache(name)
+	}
+	return err
+}
+
 // LstatIfPossible returns file info without following symlinks if the filesystem supports it
 func (ufs *UnionFS) LstatIfPossible(name string) (os.FileInfo, bool, error) {
 	name = cleanPath(name)

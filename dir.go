@@ -2,6 +2,7 @@ package unionfs
 
 import (
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"sort"
@@ -166,6 +167,53 @@ func (d *unionDir) Truncate(size int64) error {
 // WriteString is not supported for directories
 func (d *unionDir) WriteString(s string) (ret int, err error) {
 	return 0, os.ErrInvalid
+}
+
+// ReadDir reads directory entries with fs.DirEntry interface support.
+// If n > 0, ReadDir returns at most n entries. In this case, if ReadDir
+// returns fewer than n entries, it returns an error explaining why.
+// At the end of a directory, the error is io.EOF.
+// If n <= 0, ReadDir returns all the entries from the directory in a single slice.
+func (d *unionDir) ReadDir(n int) ([]fs.DirEntry, error) {
+	if d.closed {
+		return nil, os.ErrClosed
+	}
+
+	if d.entries == nil {
+		if err := d.loadEntries(); err != nil {
+			return nil, err
+		}
+	}
+
+	if d.offset >= len(d.entries) {
+		if n > 0 {
+			return nil, io.EOF
+		}
+		return nil, nil
+	}
+
+	var end int
+	if n <= 0 {
+		end = len(d.entries)
+	} else {
+		end = d.offset + n
+		if end > len(d.entries) {
+			end = len(d.entries)
+		}
+	}
+
+	// Convert FileInfo entries to DirEntry
+	result := make([]fs.DirEntry, end-d.offset)
+	for i := d.offset; i < end; i++ {
+		result[i-d.offset] = fs.FileInfoToDirEntry(d.entries[i])
+	}
+	d.offset = end
+
+	if n > 0 && len(result) == 0 {
+		return nil, io.EOF
+	}
+
+	return result, nil
 }
 
 // loadEntries loads and merges directory entries from all layers
