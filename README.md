@@ -237,6 +237,12 @@ change fails with `ErrNoWritableLayer`.
 ## Caveats
 
 - **Ownership is not copied up,** only mode and modification time.
+- **Access-time updates copy up too,** since `Chtimes` changes a file and
+  only the writable layer can record it. Served over NFS this matters: the
+  macOS client (NFSv3 and NFSv4) sends a SETATTR of the access time after a
+  program reads a file through `mmap`, so without `noatime` on the mount every
+  git object or pack that `git log` or `git status` reads is copied up.
+  Mount with `noatime`; reads then copy nothing.
 - **Copy-up runs with the union's own permissions.** A lower directory
   that its owner cannot write is copied up with that mode. Changing a file
   inside or below it works, as on a host, because the union grants itself
