@@ -209,8 +209,8 @@ func (ufs *UnionFS) root() (*node, error) {
 	n := &node{path: "/"}
 	for i := range ufs.layers {
 		n.layers = append(n.layers, i)
-		if i == len(ufs.layers)-1 {
-			break
+		if i == len(ufs.layers)-1 || !ufs.honours(i) {
+			continue
 		}
 		opaque, err := ufs.layerProbe(i, opaquePath("/"))
 		if err != nil {
@@ -228,19 +228,25 @@ func (ufs *UnionFS) root() (*node, error) {
 // view has no such entry.
 func (ufs *UnionFS) child(dir *node, name string) (*node, error) {
 	p := path.Join(dir.path, name)
-	if IsWhiteout(name) {
+	reserved := IsWhiteout(name)
+	if reserved && !ufs.upperMarkersOnly {
 		return nil, &os.PathError{Op: "lstat", Path: p, Err: os.ErrNotExist}
 	}
 	var out *node
 	for k, li := range dir.layers {
-		// A marker in the bottom contributing layer hides nothing.
-		hidesBelow := k < len(dir.layers)-1
+		if reserved && ufs.honours(li) {
+			// A marker, where markers count, is never an entry.
+			continue
+		}
+		// A marker in the bottom contributing layer hides nothing, and
+		// neither does one in a layer whose markers do not count.
+		hidesBelow := k < len(dir.layers)-1 && ufs.honours(li)
 		info, err := ufs.layerLstat(li, p)
 		if err == nil {
 			if out == nil {
 				out = &node{path: p, info: info, layers: []int{li}, parent: dir}
 				if !info.IsDir() {
-					if info.Mode().IsRegular() {
+					if info.Mode().IsRegular() && !reserved {
 						if err := ufs.findMeta(dir, k, out); err != nil {
 							return nil, err
 						}
@@ -420,8 +426,8 @@ func (ufs *UnionFS) lowerHas(dir *node, name string) (bool, error) {
 		if err != nil || found {
 			return found, err
 		}
-		if k == len(dir.layers)-1 {
-			break
+		if k == len(dir.layers)-1 || !ufs.honours(li) {
+			continue
 		}
 		whited, err := ufs.layerProbe(li, WhiteoutName(p))
 		if err != nil || whited {
@@ -429,6 +435,22 @@ func (ufs *UnionFS) lowerHas(dir *node, name string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// honours reports whether the markers in layer li count: in every layer by
+// default, only in the writable layer with WithMarkersOnlyInWritableLayer.
+func (ufs *UnionFS) honours(li int) bool {
+	return !ufs.upperMarkersOnly || li == 0 && ufs.writableLayer != nil
+}
+
+// reservedErr refuses a change to n when n, or the directory it is in, has
+// a name in the reserved space: only a read-only layer can have one, under
+// WithMarkersOnlyInWritableLayer, and the writable layer cannot hold it.
+func reservedErr(n *node) error {
+	if IsWhiteout(path.Base(n.path)) {
+		return &os.PathError{Op: "copyup", Path: n.path, Err: syscall.EPERM}
+	}
+	return nil
 }
 
 // listDir returns the merged entries of directory dir, sorted by name.
@@ -457,7 +479,7 @@ func (ufs *UnionFS) listDir(dir *node) ([]fs.DirEntry, error) {
 			if name == "." || name == ".." {
 				continue
 			}
-			if IsWhiteout(name) {
+			if IsWhiteout(name) && ufs.honours(li) {
 				if t, ok := WhiteoutTarget(name); ok {
 					hidden = append(hidden, t)
 				} else if IsMetaMarker(name) {

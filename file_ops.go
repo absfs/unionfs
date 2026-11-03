@@ -435,6 +435,9 @@ func (ufs *UnionFS) Remove(name string) error {
 // once, so no failure part way exposes lower entries that n, or markers
 // inside n, were hiding.
 func (ufs *UnionFS) removeNode(n *node, all bool) error {
+	if err := reservedErr(n); err != nil {
+		return err
+	}
 	needWhiteout, err := ufs.lowerHas(n.parent, path.Base(n.path))
 	if err != nil {
 		return err

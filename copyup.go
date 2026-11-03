@@ -110,6 +110,9 @@ func (ufs *UnionFS) ensureUpperDir(n *node) error {
 	if ufs.inUpper(n) {
 		return nil
 	}
+	if err := reservedErr(n); err != nil {
+		return err
+	}
 	if ufs.layerHas(0, n.path) {
 		n.layers = append([]int{0}, n.layers...)
 		return nil
@@ -185,6 +188,9 @@ func (ufs *UnionFS) copyUp(n *node) error {
 // otherwise it is created empty, for callers about to truncate it. On
 // failure no partial copy is left behind.
 func (ufs *UnionFS) copyUpFile(n *node, withData bool) error {
+	if err := reservedErr(n); err != nil {
+		return err
+	}
 	if err := ufs.ensureUpperDir(n.parent); err != nil {
 		return err
 	}

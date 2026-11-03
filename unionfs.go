@@ -77,6 +77,8 @@ type UnionFS struct {
 	copyBufferSize int
 	asideSeq       uint64 // last suffix asideName used; guarded by mu
 
+	upperMarkersOnly bool // WithMarkersOnlyInWritableLayer
+
 	cwdMu sync.RWMutex
 	cwd   string
 }
@@ -157,6 +159,28 @@ func WithLookupCache(ttl time.Duration, maxEntries int) Option {
 		if ttl > 0 {
 			ufs.lc = newLookupCache(ttl, maxEntries)
 		}
+	}
+}
+
+// WithMarkersOnlyInWritableLayer makes the union read whiteouts, opaque
+// markers, metadata markers and every other name in the reserved ".wh."
+// space as markers only in the writable layer. In the read-only layers they
+// are ordinary entries: a lower file or directory named ".wh.x" shows in the
+// merged view, and can be read, listed and looked up, though not changed,
+// removed or renamed, nor anything created inside it (EPERM), since the
+// writable layer could not represent the result.
+//
+// By default markers count in every layer, as in AUFS and OCI image
+// layers, so that a writable layer captured from one union can be stacked
+// as a read-only layer of another and keep its deletions. The cost is that
+// a read-only layer's own names starting with ".wh." vanish from the merged
+// view without an error; ReservedNames finds them. Use this option for
+// read-only layers that are plain trees (a source checkout, a fixture
+// directory) rather than captured changesets: it stops ".wh." names
+// vanishing, and stops whiteouts in those layers from hiding anything.
+func WithMarkersOnlyInWritableLayer() Option {
+	return func(ufs *UnionFS) {
+		ufs.upperMarkersOnly = true
 	}
 }
 

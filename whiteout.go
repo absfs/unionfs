@@ -2,7 +2,11 @@ package unionfs
 
 import (
 	"path"
+	"path/filepath"
+	"sort"
 	"strings"
+
+	"github.com/absfs/absfs"
 )
 
 // IsWhiteout reports whether name, a base name or a path, names a whiteout
@@ -12,6 +16,8 @@ import (
 //
 // Whiteout markers never appear in a union's merged view, and a union refuses
 // to create a file, directory or symlink whose name starts with the prefix.
+// Under WithMarkersOnlyInWritableLayer such names in a read-only layer are
+// ordinary entries instead; see ReservedNames.
 func IsWhiteout(name string) bool {
 	return strings.HasPrefix(path.Base(name), WhiteoutPrefix)
 }
@@ -97,4 +103,49 @@ func MetaMarkerName(name string) string {
 // opaquePath returns the opaque marker path inside directory dir.
 func opaquePath(dir string) string {
 	return path.Join(dir, OpaqueWhiteout)
+}
+
+// ReservedNames walks the tree under root in fsys, without following
+// symbolic links, and returns the slash-separated path of every entry whose
+// name starts with WhiteoutPrefix, sorted. It does not descend into such a
+// directory: everything under it is reserved with it.
+//
+// Run it on a tree before using it as a read-only layer. By default a union
+// takes every such name in any layer for a marker (a whiteout, opaque
+// marker, metadata marker or reserved name): it never appears in the merged
+// view, and a whiteout among them hides a name in the layers below. A tree
+// for which ReservedNames returns nothing is represented exactly; for one
+// that has such names and is not a captured changeset, use
+// WithMarkersOnlyInWritableLayer, or another backend. In a writable layer
+// the names are the union's own markers.
+func ReservedNames(fsys absfs.FileSystem, root string) ([]string, error) {
+	var out []string
+	var walk func(dir string) error
+	walk = func(dir string) error {
+		ents, err := fsys.ReadDir(dir)
+		if err != nil {
+			return err
+		}
+		for _, e := range ents {
+			name := e.Name()
+			if name == "." || name == ".." {
+				continue
+			}
+			p := path.Join(dir, name)
+			switch {
+			case IsWhiteout(name):
+				out = append(out, p)
+			case e.IsDir():
+				if err := walk(p); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk(path.Clean(filepath.ToSlash(root))); err != nil {
+		return nil, err
+	}
+	sort.Strings(out)
+	return out, nil
 }

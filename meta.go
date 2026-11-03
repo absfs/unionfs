@@ -102,6 +102,9 @@ func (ufs *UnionFS) findMeta(dir *node, k int, n *node) error {
 	}
 	m := MetaMarkerName(n.path)
 	for _, li := range dir.layers[:k] {
+		if !ufs.honours(li) {
+			continue
+		}
 		info, err := ufs.layerLstat(li, m)
 		if err == nil {
 			n.attachMeta(info, li)
@@ -134,6 +137,9 @@ func (ufs *UnionFS) setMeta(n *node, set func(marker string) error) error {
 	m := MetaMarkerName(n.path)
 	if ufs.upperMeta(n) {
 		return set(m)
+	}
+	if err := reservedErr(n); err != nil {
+		return err
 	}
 	if err := ufs.ensureUpperDir(n.parent); err != nil {
 		return err
