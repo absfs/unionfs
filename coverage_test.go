@@ -1,6 +1,7 @@
 package unionfs
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path"
@@ -542,46 +543,55 @@ func TestUnionFileTruncate(t *testing.T) {
 // Cache Tests
 // =============================================================================
 
-// TestCacheEviction tests cache eviction when maxEntries is reached
-func TestCacheEviction(t *testing.T) {
-	// Create cache with small max entries
-	cache := newCache(true, 5*time.Minute, 2*time.Minute, 3)
-
-	// Add entries to trigger eviction
-	cache.putStat("/file1", &mockFileInfo{name: "file1"}, 0)
-	time.Sleep(10 * time.Millisecond)
-	cache.putStat("/file2", &mockFileInfo{name: "file2"}, 0)
-	time.Sleep(10 * time.Millisecond)
-	cache.putStat("/file3", &mockFileInfo{name: "file3"}, 0)
-	time.Sleep(10 * time.Millisecond)
-
-	// This should trigger eviction
-	cache.putStat("/file4", &mockFileInfo{name: "file4"}, 0)
-
-	stats := cache.Stats()
-	if stats.StatCacheSize > 3 {
-		t.Errorf("cache size %d exceeds max %d", stats.StatCacheSize, 3)
+// steppingClock returns a clock that moves forward a second on each call,
+// so that every cache entry is strictly newer than the one before.
+func steppingClock() func() time.Time {
+	t := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	return func() time.Time {
+		t = t.Add(time.Second)
+		return t
 	}
 }
 
-// TestNegativeCacheEviction tests negative cache eviction
+// TestCacheEviction checks that a full Stat cache evicts its oldest entry.
+func TestCacheEviction(t *testing.T) {
+	cache := newCache(true, 5*time.Minute, 2*time.Minute, 3)
+	cache.now = steppingClock()
+	for i := 1; i <= 4; i++ {
+		name := fmt.Sprintf("file%d", i)
+		cache.putStat("/"+name, &mockFileInfo{name: name}, 0)
+	}
+	if n := cache.Stats().StatCacheSize; n != 3 {
+		t.Fatalf("cache size = %d, want 3", n)
+	}
+	if _, _, ok := cache.getStat("/file1"); ok {
+		t.Fatal("the oldest entry, /file1, was not evicted")
+	}
+	for _, p := range []string{"/file2", "/file3", "/file4"} {
+		if _, _, ok := cache.getStat(p); !ok {
+			t.Fatalf("%s was evicted", p)
+		}
+	}
+}
+
+// TestNegativeCacheEviction checks that a full negative cache evicts its
+// oldest entry.
 func TestNegativeCacheEviction(t *testing.T) {
 	cache := newCache(true, 5*time.Minute, 2*time.Minute, 3)
-
-	// Add entries to trigger eviction
-	cache.putNegative("/file1")
-	time.Sleep(10 * time.Millisecond)
-	cache.putNegative("/file2")
-	time.Sleep(10 * time.Millisecond)
-	cache.putNegative("/file3")
-	time.Sleep(10 * time.Millisecond)
-
-	// This should trigger eviction
-	cache.putNegative("/file4")
-
-	stats := cache.Stats()
-	if stats.NegativeCacheSize > 3 {
-		t.Errorf("negative cache size %d exceeds max %d", stats.NegativeCacheSize, 3)
+	cache.now = steppingClock()
+	for i := 1; i <= 4; i++ {
+		cache.putNegative(fmt.Sprintf("/file%d", i))
+	}
+	if n := cache.Stats().NegativeCacheSize; n != 3 {
+		t.Fatalf("negative cache size = %d, want 3", n)
+	}
+	if cache.isNegative("/file1") {
+		t.Fatal("the oldest entry, /file1, was not evicted")
+	}
+	for _, p := range []string{"/file2", "/file3", "/file4"} {
+		if !cache.isNegative(p) {
+			t.Fatalf("%s was evicted", p)
+		}
 	}
 }
 
@@ -1173,7 +1183,6 @@ func TestReadlinkFromLayers(t *testing.T) {
 	overlay := mustNewMemFS()
 	base := mustNewMemFS()
 
-	// Note: afero.MemMapFs doesn't support symlinks, so Readlink will return not exist
 	ufs := New(
 		WithWritableLayer(overlay),
 		WithReadOnlyLayer(base),

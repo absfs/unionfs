@@ -93,12 +93,9 @@ func TestRemoveDirClearsItsWhiteouts(t *testing.T) {
 	if _, err := ufs.Stat("/d"); !os.IsNotExist(err) {
 		t.Fatalf("Stat after Remove: got %v, want not exist", err)
 	}
-	if exists(upper, "/d/.wh.a") {
-		t.Fatal("whiteouts inside the removed directory survived")
-	}
-	if !exists(upper, "/.wh.d") {
-		t.Fatal("expected a whiteout for the lower directory")
-	}
+	// Only the whiteout for /d remains: none of /d's whiteouts survive,
+	// not even in a leftover aside copy.
+	wantNames(t, upperMarkers(t, upper), "/.wh.d")
 	if !exists(lower, "/d/a") {
 		t.Fatal("lower was modified")
 	}
