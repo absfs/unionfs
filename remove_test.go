@@ -139,3 +139,36 @@ func TestRemoveShadowedFileWritesWhiteout(t *testing.T) {
 		t.Fatalf("lower file reappeared: %v", err)
 	}
 }
+
+// The sequence from the C4 prototype report: mkdir d; touch d/f; rm d/f;
+// rmdir d, all in the writable layer, with and without a lower d.
+func TestRemoveReportedSequence(t *testing.T) {
+	for _, lowerHasD := range []bool{false, true} {
+		ufs, upper, lower := newTestUnion(t)
+		if lowerHasD {
+			mustMkdirAll(t, lower, "/d")
+			put(t, lower, "/d/g", "g")
+			if err := ufs.Remove("/d/g"); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := ufs.Mkdir("/d", 0755); err != nil {
+			t.Fatal(err)
+		}
+		put(t, ufs, "/d/f", "f")
+		if err := ufs.Remove("/d/f"); err != nil {
+			t.Fatal(err)
+		}
+		if exists(upper, "/d/.wh.f") {
+			t.Fatal("whiteout for an upper-only file")
+		}
+		if err := ufs.Remove("/d"); err != nil {
+			t.Fatalf("rmdir (lower has d: %v): %v", lowerHasD, err)
+		}
+		if _, err := ufs.Stat("/d"); !os.IsNotExist(err) {
+			t.Fatalf("d still visible: %v", err)
+		}
+		if exists(upper, "/.wh.d") != lowerHasD {
+			t.Fatalf("whiteout for d = %v, want %v", !lowerHasD, lowerHasD)
+		}
+	}
+}
