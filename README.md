@@ -116,12 +116,15 @@ More, compiled and checked by `go test`, in
   into the upper. A target is walked element by element, as a kernel does,
   so a `..` after a linked directory leaves the directory that link
   resolves to. Loops fail with `ELOOP` after 40 links.
-- **Copy-up on every kind of change:** opening for write, `Truncate`,
-  `Chmod`, `Chown`, `Lchown`, `Chtimes`. Mode and modification time are
-  kept; links are copied as links; `O_TRUNC` and `Truncate(0)` skip the
-  contents; `O_CREATE` on an existing file without a write flag is a read
-  and copies nothing, and so does a `Chtimes` that changes only a lower
-  entry's access time. Copying up does not change the directories it
+- **Copy-up on write, metadata markers on metadata changes.** Opening a
+  lower file for write, `Truncate` and `Rename` copy it up; mode and
+  modification time are kept; links are copied as links; `O_TRUNC` and
+  `Truncate(0)` skip the contents; `O_CREATE` on an existing file without
+  a write flag is a read and copies nothing, and so does a `Chtimes` that
+  changes only a lower entry's access time. `Chmod`, `Chown`, `Lchown` and
+  `Chtimes` of a lower regular file copy no data at all: they write an
+  empty `.wh..wh.meta.<name>` marker whose own mode, mtime and owner are
+  the file's new ones (see below). Copying up does not change the directories it
   passes through: their mode and modification time stay as the lower's,
   and a read-only lower ancestor (0555) does not stop a change to a file
   below it, just as on a host.
@@ -139,8 +142,8 @@ More, compiled and checked by `go test`, in
   an existing file or empty directory, with rename(2)'s errors. A directory
   that lower layers contribute to is copied up whole and moved, leaving a
   self-contained copy and one whiteout.
-- **Changeset helpers:** `IsWhiteout`, `IsOpaqueMarker`, `WhiteoutTarget`,
-  `WhiteoutName`.
+- **Changeset helpers:** `IsWhiteout`, `IsOpaqueMarker`, `IsMetaMarker`,
+  `WhiteoutTarget`, `WhiteoutName`, `MetaTarget`, `MetaMarkerName`.
 - **Optional Stat cache,** with negative entries, TTLs and invalidation.
 - **Safe for concurrent use,** tested under the race detector.
 
@@ -150,12 +153,13 @@ All changes land in the writable layer. Whiteouts use the `.wh.<name>`
 naming of AUFS and OCI/Docker image layers; the opaque marker does not (see
 below). The format, exactly:
 
-| On disk in the writable layer                  | Meaning                                                        |
-| ---------------------------------------------- | -------------------------------------------------------------- |
-| `dir/.wh.<name>`, an empty regular file        | `dir/<name>` was deleted, with everything under it             |
-| `dir/.wh.__dir_opaque`, an empty regular file  | `dir` replaced the lower `dir`: none of the lower entries show |
-| any other file, link or directory              | created, modified, or copied up because its metadata changed   |
-| `dir/.wh..wh.unionfs.<n>`, a file or directory | nothing: a leftover from a failed operation, safe to delete    |
+| On disk in the writable layer                    | Meaning                                                                                   |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `dir/.wh.<name>`, an empty regular file          | `dir/<name>` was deleted, with everything under it                                        |
+| `dir/.wh.__dir_opaque`, an empty regular file    | `dir` replaced the lower `dir`: none of the lower entries show                            |
+| `dir/.wh..wh.meta.<name>`, an empty regular file | only the mode, times or owner of the lower file `dir/<name>` changed: to the marker's own |
+| any other file, link or directory                | created, modified, or copied up because its metadata changed                              |
+| `dir/.wh..wh.unionfs.<n>`, a file or directory   | nothing: a leftover from a failed operation, safe to delete                               |
 
 `WhiteoutPrefix` is `".wh."` and `OpaqueWhiteout` is `".wh.__dir_opaque"`.
 A whiteout and an entry of the same name never coexist in the writable
@@ -168,6 +172,44 @@ OCI: they are hidden but delete nothing, and `WhiteoutTarget` returns false
 for them. The union uses `.wh..wh.unionfs.<n>` for an entry it is about to
 delete; one is left behind only when a layer fails part way through
 deleting it.
+
+### Metadata markers
+
+`chmod +x` on a 2 GB lower file, or git "freshening" a pack by setting its
+times, should not copy 2 GB. So `Chmod`, `Chown`, `Lchown` and `Chtimes`
+(with a new modification time) of a regular file that only a lower layer
+has write a marker instead of a copy: `dir/.wh..wh.meta.<name>`, a
+zero-length regular file in the writable layer whose **own** permission
+bits (all of them, so the execute bits read straight off it),
+modification time and owner are the file's new metadata. There is no
+`dir/<name>` in the upper. Through the union, `Stat`, `Lstat`, `ReadDir`
+and an open handle's `Stat` report the lower file's size, contents and type
+with the marker's mode, mtime and owner; `FileInfo.Sys()` carries the
+marker's owner where both layers report one (a host `*syscall.Stat_t`, a
+memfs `*inode.Inode`). Reads come from the lower.
+
+- Further metadata changes update the same marker.
+- The first open with a write flag (`O_WRONLY`, `O_RDWR`, `O_APPEND`,
+  `O_TRUNC`, even if nothing is then written), `Truncate` or `Rename` copies
+  the data up, gives the copy the marker's mode, mtime and owner, and
+  removes the marker.
+- `Remove` deletes the marker and writes the whiteout, as for any lower
+  file.
+- If the lower file changes underneath, the marker still applies to it.
+- Directories and symbolic links are copied up as before: copying them
+  costs no data.
+- A marker in a read-only layer applies to the layers below it, so a
+  captured upper can be stacked as a lower.
+
+A marker and an entry of the same name never coexist in the upper once an
+operation has finished. `MetaTarget(".../.wh..wh.meta.x")` returns
+`".../x"`; `MetaMarkerName` builds a marker name for writers.
+
+**Reading a changeset with metadata markers.** A reader that predates
+them skips every `.wh..wh.` name, as it already must, and so sees no change
+for such a file: it misses the metadata change but nothing else. A reader
+that knows them reports a metadata-only change to `MetaTarget(marker)`,
+taking the new mode, mtime and owner from the marker itself.
 
 **The opaque marker differs from OCI and AUFS.** Their opaque marker is
 `.wh..wh..opq`; this package's is `.wh.__dir_opaque`, unchanged since
@@ -183,13 +225,18 @@ walk = func(dir string) {
     ents, _ := upper.ReadDir(dir)
     for _, e := range ents {
         p := path.Join(dir, e.Name())
-        switch deleted, isWhiteout := unionfs.WhiteoutTarget(p); {
+        deleted, isWhiteout := unionfs.WhiteoutTarget(p)
+        changed, isMeta := unionfs.MetaTarget(p)
+        switch {
         case unionfs.IsOpaqueMarker(p):
             replaceDir(dir) // drop every lower entry under dir; the upper's entries are the whole contents
         case isWhiteout:
             remove(deleted) // deleted, with everything under it
+        case isMeta:
+            info, _ := e.Info()
+            setMeta(changed, info) // contents unchanged; mode, mtime and owner are the marker's own
         case unionfs.IsWhiteout(p):
-            // reserved .wh..wh. name: a leftover, not part of the changeset
+            // other reserved .wh..wh. name: a leftover, not part of the changeset
         case e.IsDir():
             walk(p)         // a directory may also be new: add it if the lower lacks it
         default:
@@ -204,9 +251,10 @@ Things to know when capturing:
 
 - An upper directory without an opaque marker merges with the lower one:
   only its entries changed. With the marker, it is the whole new contents.
-- A file in the upper may be byte-identical to the lower one: it was
-  copied up because its mode, owner or times changed. Compare against the
-  lower to tell.
+- A regular file whose mode, owner or times alone changed is a metadata
+  marker, not a copy. A file in the upper may still be byte-identical to
+  the lower one: opened for writing without a write, say. Compare against
+  the lower to tell.
 - A renamed lower file appears as a whiteout at the old name and a file
   at the new one; a renamed lower directory as a whiteout and a complete
   copy with no markers inside it, except an opaque marker at its top when
@@ -217,18 +265,19 @@ Things to know when capturing:
 
 ## Semantics in brief
 
-| Operation                               | What happens                                                                                                   |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `Stat`, `Open` (read)                   | first layer with the name wins; directories merge down to a whiteout, an opaque marker or a non-directory      |
-| `ReadDir`                               | merged, sorted by name, whited-out names and markers left out                                                  |
-| `OpenFile` (write)                      | lower file copied up first; new file created in the upper, its whiteout removed; a directory fails with EISDIR |
-| `Mkdir`, `MkdirAll`                     | in the upper; opaque when a lower layer has the (whited-out) name                                              |
-| `Remove`                                | ENOTEMPTY unless the merged view is empty; whiteout only if a lower layer has the name                         |
-| `RemoveAll`                             | upper copy deleted, one whiteout if a lower layer has the name; nil for a missing path                         |
-| `Rename`                                | rename(2) rules; sources copied up; whiteout at the old name if a lower layer has it                           |
-| `Chmod`, `Chown`, `Chtimes`, `Truncate` | follow links, copy up, change the upper copy; `Chtimes` of the access time alone copies nothing (below)        |
-| `Lchown`                                | does not follow a final link; copies a link up as a link                                                       |
-| `Symlink`                               | in the upper; the target is stored as given and resolved against the union                                     |
+| Operation                   | What happens                                                                                                                                                        |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Stat`, `Open` (read)       | first layer with the name wins; directories merge down to a whiteout, an opaque marker or a non-directory                                                           |
+| `ReadDir`                   | merged, sorted by name, whited-out names and markers left out                                                                                                       |
+| `OpenFile` (write)          | lower file copied up first (with a metadata marker's changes, which it removes); new file created in the upper, its whiteout removed; a directory fails with EISDIR |
+| `Mkdir`, `MkdirAll`         | in the upper; opaque when a lower layer has the (whited-out) name                                                                                                   |
+| `Remove`                    | ENOTEMPTY unless the merged view is empty; whiteout only if a lower layer has the name                                                                              |
+| `RemoveAll`                 | upper copy deleted, one whiteout if a lower layer has the name; nil for a missing path                                                                              |
+| `Rename`                    | rename(2) rules; sources copied up; whiteout at the old name if a lower layer has it                                                                                |
+| `Chmod`, `Chown`, `Chtimes` | follow links; a lower regular file gets a metadata marker, anything else is copied up; `Chtimes` of the access time alone writes nothing (below)                    |
+| `Truncate`                  | follows links, copies up, truncates the upper copy                                                                                                                  |
+| `Lchown`                    | does not follow a final link; a lower regular file gets a metadata marker, a link is copied up as a link                                                            |
+| `Symlink`                   | in the upper; the target is stored as given and resolved against the union                                                                                          |
 
 Errors are `*os.PathError` (or `*os.LinkError` for `Rename` and `Symlink`)
 wrapping the usual `syscall` errors, so `os.IsNotExist`, `os.IsExist` and
@@ -237,16 +286,20 @@ change fails with `ErrNoWritableLayer`.
 
 ## Caveats
 
-- **Ownership is not copied up,** only mode and modification time.
+- **Ownership is not copied up,** only mode and modification time. A
+  metadata marker starts with the lower file's owner, and a copy made
+  from a marker gets the marker's owner, only where the union may chown
+  to it (as root, or to the union's own user and groups).
 - **Access-time-only updates of lower entries are dropped,** not copied
   up. `Chtimes` of a name only lower layers have (a file, a link's target
-  or a directory) copies nothing and returns nil when `mtime` is the zero
+  or a directory) writes nothing and returns nil when `mtime` is the zero
   `Time` (which `os.Chtimes` takes as "leave unchanged") or equals the
   lower entry's current modification time. `os.FileInfo` has no access
   time, so the change could not be seen through the union anyway; a host
   layer's `FileInfo.Sys()` keeps reporting the lower file's own access
-  time. Any other `mtime`, even one nanosecond off, copies up as before,
-  and an entry already in the writable layer gets both times, except that
+  time. Any other `mtime`, even one nanosecond off, writes a metadata
+  marker for a file (and copies a directory up), and an entry already in
+  the writable layer gets both times, except that
   a zero `mtime` leaves its modification time alone there too. This matters
   served over NFS: the macOS client (NFSv3 and NFSv4) sends a SETATTR of
   the access time after a program reads a file through `mmap`, and absnfs

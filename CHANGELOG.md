@@ -96,6 +96,19 @@ match POSIX, and callers relying on the old ones should read
   recognise marker files and map a whiteout to the name it deletes. Names
   starting with `.wh..wh.` are reserved metadata, as in AUFS and OCI:
   `WhiteoutTarget` returns false for them.
+- Metadata markers: `Chmod`, `Chown`, `Lchown` and `Chtimes` (with a new
+  modification time) of a regular file only lower layers have copy no
+  data. They create or update an empty `.wh..wh.meta.<name>` file beside
+  it in the writable layer whose own permission bits, modification time
+  and owner are the file's; `Stat`, `Lstat`, `ReadDir` and open handles
+  report them, and `FileInfo.Sys()` carries the owner on host and memfs
+  layers. The first open for writing, `Truncate` or `Rename` copies the
+  data up with that metadata and removes the marker; `Remove` deletes it
+  with the whiteout. A `chmod +x` of a large file, or git freshening a
+  lower pack with its times, no longer copies it. `MetaPrefix`,
+  `IsMetaMarker`, `MetaTarget` and `MetaMarkerName` name the markers; a
+  changeset reader that skips `.wh..wh.` names, as before, sees no change
+  for such a file.
 - The README documents the whiteout format exactly and how to read a
   writable layer as a changeset.
 - Tests over host directories (basefs over osfs), fault injection, a
@@ -128,6 +141,10 @@ These may affect existing callers:
   read: it no longer copies the file up.
 - A zero TTL in `WithStatCache` or `WithCacheConfig` never serves a cached
   entry; before, one could be served within the same clock tick.
+- A metadata change to a lower regular file leaves a
+  `.wh..wh.meta.<name>` marker in the writable layer instead of a copy of
+  the file (see Added). A tool that reads the upper as a changeset and
+  wants those changes must read the markers.
 
 Internal:
 
@@ -139,7 +156,7 @@ Internal:
 
 ### Unchanged
 
-- The on-disk format: `.wh.<name>` whiteout files and the
+- The on-disk format of deletions: `.wh.<name>` whiteout files and the
   `.wh.__dir_opaque` marker, both empty regular files. The opaque marker is
   not the `.wh..wh..opq` that AUFS and OCI image layers use.
 

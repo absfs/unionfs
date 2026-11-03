@@ -32,9 +32,15 @@ that starts with WhiteoutPrefix fails with EPERM.
 
 Every change goes to the writable layer:
 
-  - Opening an existing lower file for writing, truncating it, or changing
-    its mode, owner or times first copies it up: contents, mode and
-    modification time. Symbolic links are copied up as links. The
+  - Opening an existing lower file for writing, or truncating it, first
+    copies it up: contents, mode and modification time. Changing the
+    mode, owner or times of a regular file only lower layers have copies
+    nothing: the change goes to a metadata marker beside it in the
+    writable layer (see Whiteout format below), and the data is copied
+    up only by the first open for writing (even one that writes nothing),
+    truncate or rename. Changing the mode, owner or times of a directory
+    or link copies it up, which costs no data. Symbolic links are copied
+    up as links. The
     directories above it are copied up as empty directories with their
     modes and times, and copying up into a directory leaves its mode and
     modification time as they were. A copy-up below a lower directory its
@@ -84,19 +90,37 @@ package's own:
     metadata, as in AUFS and OCI: they are hidden and delete nothing. The
     union names an entry it is about to delete ".wh..wh.unionfs.<n>"; one
     is left behind only when a layer fails part way through deleting it.
+  - A metadata marker is an empty regular file named MetaPrefix + name
+    (".wh..wh.meta.name") in the directory that holds name, a regular file
+    the layers below have. Its own permission bits (all of them, so the
+    execute bits read straight off it), modification time and owner are
+    name's; name's contents, size and type are the lower file's. There is
+    no entry name in the same layer. Stat, Lstat, ReadDir and a handle
+    opened for reading report the marker's metadata, and a FileInfo's Sys
+    value carries the marker's owner where both layers report one (host
+    directories, memfs). Removing name deletes the marker with it; the
+    first copy-up of name gives the copy the marker's metadata and deletes
+    the marker. A marker in a read-only layer applies in the same way to
+    the layers below it, so a captured upper can be stacked as a lower.
 
 Once an operation has finished, a whiteout and an entry of the same name
 never coexist in the writable layer: creating the entry removes the
-whiteout, and deleting it leaves only the whiteout.
+whiteout, and deleting it leaves only the whiteout. Nor do a metadata
+marker and an entry of its name: copying up or replacing the file removes
+the marker.
 
 The writable layer can therefore be read on its own as a changeset against
 the layers below: a whiteout W records that WhiteoutTarget(W) was deleted,
 an opaque marker records that its directory replaced the lower one (the
 lower directory's entries are all gone, and its entries in the writable
-layer are the whole new contents), and every other entry was created,
-modified, or copied up because its metadata changed; reserved ".wh..wh."
-names are not part of the changeset. IsWhiteout, IsOpaqueMarker,
-WhiteoutTarget and WhiteoutName recognise and build marker names; they take
+layer are the whole new contents), a metadata marker M records that only
+the mode, times or owner of MetaTarget(M) changed, to M's own, and every
+other entry was created, modified, or copied up because a directory's or
+link's metadata changed; other reserved ".wh..wh." names are not part of
+the changeset. A reader that predates metadata markers skips every
+".wh..wh." name, and so sees no change for such a file. IsWhiteout,
+IsOpaqueMarker, IsMetaMarker, WhiteoutTarget, WhiteoutName, MetaTarget and
+MetaMarkerName recognise and build marker names; they take
 slash-separated names without a trailing slash, so convert a host path with
 filepath.ToSlash first. See the example for WhiteoutTarget, and the README,
 for a walk that does this.
@@ -132,7 +156,10 @@ reading the lower copy after another handle copies it up.
 # Caveats
 
   - Copy-up keeps mode and modification time, not ownership; a lower file
-    owned by another user is owned by the union's user once copied up.
+    owned by another user is owned by the union's user once copied up. A
+    metadata marker is given the lower file's owner, and a copy the
+    marker's owner, only where the union's permissions allow that chown;
+    otherwise they too are owned by the union's user.
   - Copy-up runs with the union's own permissions: a lower directory
     without write permission for its owner is copied up with that mode, and
     creating, removing or renaming an entry directly inside it then fails
