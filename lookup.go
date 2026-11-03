@@ -112,6 +112,94 @@ func isSymlink(info os.FileInfo) bool {
 	return info.Mode()&os.ModeSymlink != 0
 }
 
+// cachedRoot resolves "/" as root does, from the lookup cache when it is
+// on.
+func (ufs *UnionFS) cachedRoot() (*node, error) {
+	if ufs.lc == nil {
+		return ufs.root()
+	}
+	if r := ufs.lc.getRoot(); r != nil {
+		return r, nil
+	}
+	r, err := ufs.root()
+	if err == nil {
+		ufs.lc.putRoot(r)
+	}
+	return r, err
+}
+
+// lookup resolves name inside directory dir as child does, from the lookup
+// cache when it is on. It reports whether the result came from the cache.
+func (ufs *UnionFS) lookup(dir *node, name string) (*node, bool, error) {
+	if ufs.lc == nil {
+		n, err := ufs.child(dir, name)
+		return n, false, err
+	}
+	if n, ok := ufs.lc.get(dir, name); ok {
+		if n == nil {
+			return nil, true, &os.PathError{Op: "lstat", Path: path.Join(dir.path, name), Err: os.ErrNotExist}
+		}
+		return n, true, nil
+	}
+	n, err := ufs.child(dir, name)
+	switch {
+	case err == nil:
+		ufs.lc.put(dir, name, n)
+	case os.IsNotExist(err):
+		ufs.lc.put(dir, name, nil)
+	}
+	return n, false, err
+}
+
+// finish returns the node a walk ended at, with its info. Without the
+// lookup cache that is cur itself, given the root's info if it is the root.
+// With it, cur may be shared, so finish returns a copy, and unless cur was
+// just resolved from the layers it reads cur's info afresh: the cache keeps
+// which layer holds a name, not its attributes. A cached node whose layer
+// has lost it, or holds something of another type now, is dropped from the
+// cache and resolved again.
+func (ufs *UnionFS) finish(cur *node, fresh bool) (*node, error) {
+	if ufs.lc == nil {
+		if cur.info == nil {
+			info, err := ufs.layers[0].fs.Stat("/")
+			if err != nil {
+				return nil, err
+			}
+			cur.info = info
+		}
+		return cur, nil
+	}
+	out := *cur
+	if fresh && cur.info != nil {
+		return &out, nil
+	}
+	if cur.parent == nil {
+		info, err := ufs.layers[0].fs.Stat("/")
+		if err != nil {
+			return nil, err
+		}
+		out.info = info
+		return &out, nil
+	}
+	info, err := ufs.layerLstat(cur.top(), cur.path)
+	if err == nil && info.Mode().Type() == cur.info.Mode().Type() {
+		out.info = info
+		if cur.meta == nil {
+			return &out, nil
+		}
+		var meta os.FileInfo
+		if meta, err = ufs.layerLstat(cur.metaLayer, MetaMarkerName(cur.path)); err == nil {
+			out.attachMeta(meta, cur.metaLayer)
+			return &out, nil
+		}
+	}
+	if err != nil && !isNotExist(err) {
+		return nil, err
+	}
+	ufs.lc.invalidate(cur.path)
+	return ufs.child(cur.parent, path.Base(cur.path))
+}
+
 // root resolves "/" without its info: walking through the root needs only
 // its layers, and walk reads the info when a path ends there.
 func (ufs *UnionFS) root() (*node, error) {
@@ -216,7 +304,7 @@ func (ufs *UnionFS) resolve(p string, follow bool) (*node, error) {
 func (ufs *UnionFS) walk(start *node, p string, follow bool, links *int) (*node, error) {
 	cur := start
 	if cur == nil {
-		r, err := ufs.root()
+		r, err := ufs.cachedRoot()
 		if err != nil {
 			return nil, err
 		}
@@ -225,6 +313,7 @@ func (ufs *UnionFS) walk(start *node, p string, follow bool, links *int) (*node,
 	if path.IsAbs(p) {
 		cur = rootOf(cur)
 	}
+	fresh := false // cur was just resolved from the layers
 	elems := strings.Split(p, "/")
 	for len(elems) > 0 {
 		name := elems[0]
@@ -239,16 +328,16 @@ func (ufs *UnionFS) walk(start *node, p string, follow bool, links *int) (*node,
 			continue
 		case "..":
 			if cur.parent != nil {
-				cur = cur.parent
+				cur, fresh = cur.parent, false
 			}
 			continue
 		}
-		next, err := ufs.child(cur, name)
+		next, cached, err := ufs.lookup(cur, name)
 		if err != nil {
 			return nil, err
 		}
 		if !isSymlink(next.info) || !(follow || len(elems) > 0) {
-			cur = next
+			cur, fresh = next, !cached
 			continue
 		}
 		*links++
@@ -263,18 +352,11 @@ func (ufs *UnionFS) walk(start *node, p string, follow bool, links *int) (*node,
 			return nil, &os.PathError{Op: "lstat", Path: next.path, Err: os.ErrNotExist}
 		}
 		if path.IsAbs(target) {
-			cur = rootOf(cur)
+			cur, fresh = rootOf(cur), false
 		}
 		elems = append(strings.Split(target, "/"), elems...)
 	}
-	if cur.info == nil {
-		info, err := ufs.layers[0].fs.Stat("/")
-		if err != nil {
-			return nil, err
-		}
-		cur.info = info
-	}
-	return cur, nil
+	return ufs.finish(cur, fresh)
 }
 
 // rootOf returns the root node n was reached from.

@@ -15,10 +15,85 @@ import (
 // setgid and sticky.
 const chmodBits = os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky
 
-// upper returns the writable layer's filesystem. Callers check that the
-// union has a writable layer first.
+// upper returns the writable layer's filesystem, for writing to it.
+// Callers check that the union has a writable layer first. With the lookup
+// cache on, every call through it that adds, removes or renames an entry
+// drops the cached lookups the change affects (see touched).
 func (ufs *UnionFS) upper() absfs.FileSystem {
-	return ufs.layers[0].fs
+	if ufs.lc == nil {
+		return ufs.layers[0].fs
+	}
+	return upperFS{FileSystem: ufs.layers[0].fs, ufs: ufs}
+}
+
+// upperSymlinker returns the writable layer's Symlink, and whether it has
+// one, as upper returns the layer.
+func (ufs *UnionFS) upperSymlinker() (symlinker, bool) {
+	if _, ok := ufs.layers[0].fs.(symlinker); !ok {
+		return nil, false
+	}
+	s, ok := ufs.upper().(symlinker)
+	return s, ok
+}
+
+// upperFS is the writable layer as the union writes to it with the lookup
+// cache on.
+type upperFS struct {
+	absfs.FileSystem
+	ufs *UnionFS
+}
+
+func (u upperFS) OpenFile(name string, flag int, perm os.FileMode) (absfs.File, error) {
+	if flag&os.O_CREATE != 0 {
+		defer u.ufs.touched(name)
+	}
+	return u.FileSystem.OpenFile(name, flag, perm)
+}
+
+func (u upperFS) Mkdir(name string, perm os.FileMode) error {
+	defer u.ufs.touched(name)
+	return u.FileSystem.Mkdir(name, perm)
+}
+
+func (u upperFS) Remove(name string) error {
+	defer u.ufs.touched(name)
+	return u.FileSystem.Remove(name)
+}
+
+func (u upperFS) RemoveAll(name string) error {
+	defer u.ufs.touched(name)
+	return u.FileSystem.RemoveAll(name)
+}
+
+func (u upperFS) Rename(oldname, newname string) error {
+	defer u.ufs.touched(oldname)
+	defer u.ufs.touched(newname)
+	return u.FileSystem.Rename(oldname, newname)
+}
+
+// Symlink is the writable layer's; upperSymlinker checks that it has one.
+func (u upperFS) Symlink(oldname, newname string) error {
+	defer u.ufs.touched(newname)
+	return u.FileSystem.(symlinker).Symlink(oldname, newname)
+}
+
+// touched drops the lookup cache's entries that a change to the entry at
+// p in the writable layer affects: p and everything under it, or, for a
+// marker, the name it hides or changes, or for an opaque marker its whole
+// directory. The union's own leftover names affect nothing.
+func (ufs *UnionFS) touched(p string) {
+	p = cleanPath(p)
+	dir, base := path.Split(p)
+	if t, ok := WhiteoutTarget(base); ok {
+		p = dir + t
+	} else if t, ok := MetaTarget(base); ok {
+		p = dir + t
+	} else if base == OpaqueWhiteout {
+		p = cleanPath(dir)
+	} else if IsWhiteout(base) {
+		return
+	}
+	ufs.lc.invalidate(p)
 }
 
 // chmodUpper sets the permission bits of p in the writable layer to those of
@@ -120,7 +195,7 @@ func (ufs *UnionFS) copyUpFile(n *node, withData bool) error {
 		if target, err = ufs.layerReadlink(n.top(), n.path); err != nil {
 			return err
 		}
-		if _, ok := ufs.upper().(symlinker); !ok {
+		if _, ok := ufs.upperSymlinker(); !ok {
 			return &os.PathError{Op: "copyup", Path: n.path, Err: errors.ErrUnsupported}
 		}
 	} else if !mode.IsRegular() {
@@ -128,7 +203,8 @@ func (ufs *UnionFS) copyUpFile(n *node, withData bool) error {
 	}
 	err := ufs.keepDir(n.parent.path, func() error {
 		if isSymlink(n.info) {
-			return ufs.upper().(symlinker).Symlink(target, n.path)
+			s, _ := ufs.upperSymlinker()
+			return s.Symlink(target, n.path)
 		}
 		if err := ufs.copyUpRegular(n, withData); err != nil {
 			return err

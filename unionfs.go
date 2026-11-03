@@ -73,6 +73,7 @@ type UnionFS struct {
 	writableLayer  *Layer   // the writable layer, layers[0], or nil
 	mu             sync.RWMutex
 	cache          *Cache
+	lc             *lookupCache // nil unless WithLookupCache enables it
 	copyBufferSize int
 	asideSeq       uint64 // last suffix asideName used; guarded by mu
 
@@ -106,16 +107,17 @@ func WithReadOnlyLayer(fs absfs.FileSystem) Option {
 	}
 }
 
-// WithStatCache enables a cache of Stat results with the given TTL; misses
-// are cached for half as long. See WithCacheConfig.
+// WithStatCache enables a cache of Stat and Lstat results with the given
+// TTL; misses are cached for half as long. See WithCacheConfig, and
+// WithLookupCache for a cache that never serves stale attributes.
 func WithStatCache(enabled bool, ttl time.Duration) Option {
 	return func(ufs *UnionFS) {
 		ufs.cache = newCache(enabled, ttl, ttl/2, 1000)
 	}
 }
 
-// WithCacheConfig enables a cache of Stat results with separate TTLs for
-// found and missing paths and a bound on entries per kind.
+// WithCacheConfig enables a cache of Stat and Lstat results with separate
+// TTLs for found and missing paths and a bound on entries per kind.
 //
 // Changes made through the union drop the cached entries at and under the
 // paths they touch. Changes made to a layer directly, writes through an open
@@ -126,6 +128,35 @@ func WithStatCache(enabled bool, ttl time.Duration) Option {
 func WithCacheConfig(enabled bool, statTTL, negativeTTL time.Duration, maxEntries int) Option {
 	return func(ufs *UnionFS) {
 		ufs.cache = newCache(enabled, statTTL, negativeTTL, maxEntries)
+	}
+}
+
+// WithLookupCache caches path resolution for ttl: which layer holds each
+// name looked up, the whiteouts, opaque markers and metadata markers that
+// apply to it, and which names are missing. Every lookup (Stat, Lstat,
+// Open, ReadDir and the lookups inside every change) then reads only the
+// final element's attributes from its layer, one call (two for a file a
+// metadata marker changes), instead of probing every layer for every
+// element of the path. A ttl of zero or less leaves it off, the default.
+// maxEntries bounds the number of cached names; the cache is emptied when
+// it fills. Zero or less means 100000.
+//
+// Unlike the Stat cache, it never serves attributes, so it stays exact
+// under writes through open handles. Every change made through the union
+// drops what it affects: the names it creates, removes, renames or copies
+// up, with everything under them, and the names whose whiteouts, opaque
+// markers or metadata markers it writes or removes. Changes made to a layer
+// directly show only once the entries for them expire, or after
+// InvalidateCache, InvalidateCacheTree or ClearCache: a name added to a
+// layer may stay missing, or stay hidden by a layer above, and a name
+// removed from a layer is found again in a lower layer only when the
+// final element of a lookup goes missing.
+func WithLookupCache(ttl time.Duration, maxEntries int) Option {
+	return func(ufs *UnionFS) {
+		ufs.lc = nil
+		if ttl > 0 {
+			ufs.lc = newLookupCache(ttl, maxEntries)
+		}
 	}
 }
 
@@ -168,26 +199,44 @@ func cleanPath(p string) string {
 	return cleaned
 }
 
-// InvalidateCache drops the cached Stat result, or cached miss, for path.
-// Use it after changing a layer directly rather than through the union.
+// InvalidateCache drops the cached Stat and Lstat results, or cached
+// misses, for path, and the lookup cache's entries for path and everything
+// under it. Use it after changing a layer directly rather than through the
+// union.
 func (ufs *UnionFS) InvalidateCache(path string) {
 	path = cleanPath(path)
 	ufs.cache.invalidate(path)
+	if ufs.lc != nil {
+		ufs.lc.invalidate(path)
+	}
 }
 
-// InvalidateCacheTree drops every cached entry whose path starts with
-// pathPrefix.
+// InvalidateCacheTree drops every cached Stat and Lstat entry whose path
+// starts with pathPrefix, and the lookup cache's entries for pathPrefix and
+// everything under it.
 func (ufs *UnionFS) InvalidateCacheTree(pathPrefix string) {
 	pathPrefix = cleanPath(pathPrefix)
 	ufs.cache.invalidateTree(pathPrefix)
+	if ufs.lc != nil {
+		ufs.lc.invalidate(pathPrefix)
+	}
 }
 
-// ClearCache drops every cached entry.
+// ClearCache drops every cached entry, in the Stat cache and the lookup
+// cache.
 func (ufs *UnionFS) ClearCache() {
 	ufs.cache.clear()
+	if ufs.lc != nil {
+		ufs.lc.clear()
+	}
 }
 
-// CacheStats reports the Stat cache's configuration and size.
+// CacheStats reports the configuration and size of the Stat cache and the
+// lookup cache.
 func (ufs *UnionFS) CacheStats() CacheStats {
-	return ufs.cache.Stats()
+	st := ufs.cache.Stats()
+	if ufs.lc != nil {
+		st.LookupEnabled, st.LookupEntries, st.LookupTTL = true, ufs.lc.len(), ufs.lc.ttl
+	}
+	return st
 }

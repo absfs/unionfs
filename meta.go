@@ -97,6 +97,9 @@ func (f metaFile) Stat() (os.FileInfo, error) {
 // k-th contributing layer of its directory dir supplied, in the layers of
 // dir above that one, top first, and records the first it finds in n.
 func (ufs *UnionFS) findMeta(dir *node, k int, n *node) error {
+	if k == 0 {
+		return nil
+	}
 	m := MetaMarkerName(n.path)
 	for _, li := range dir.layers[:k] {
 		info, err := ufs.layerLstat(li, m)

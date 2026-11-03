@@ -43,7 +43,7 @@ func (ufs *UnionFS) Symlink(oldname, newname string) error {
 	defer ufs.mu.Unlock()
 	defer ufs.invalidate(p)
 
-	s, ok := ufs.upper().(symlinker)
+	s, ok := ufs.upperSymlinker()
 	if !ok {
 		return fail(errors.ErrUnsupported)
 	}

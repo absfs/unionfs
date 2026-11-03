@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Cache is the Stat cache a UnionFS keeps when WithStatCache or
+// Cache is the Stat and Lstat cache a UnionFS keeps when WithStatCache or
 // WithCacheConfig enables it. Callers never construct or receive one: it is
 // exported only for compatibility with v1.0.0. Use UnionFS.CacheStats,
 // InvalidateCache, InvalidateCacheTree and ClearCache instead.
@@ -136,7 +136,11 @@ func (c *Cache) putNegative(path string) {
 	}
 }
 
-// invalidate removes a path from all caches
+// lstatKey is appended to a path to key its Lstat result, so that the
+// Lstat entries of a tree start with the tree's path as its Stat entries do.
+const lstatKey = "\x00lstat"
+
+// invalidate removes a path's Stat and Lstat entries from all caches
 func (c *Cache) invalidate(path string) {
 	if !c.enabled {
 		return
@@ -145,8 +149,10 @@ func (c *Cache) invalidate(path string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	delete(c.statCache, path)
-	delete(c.negativeCache, path)
+	for _, k := range []string{path, path + lstatKey} {
+		delete(c.statCache, k)
+		delete(c.negativeCache, k)
+	}
 }
 
 // invalidateTree removes all cache entries under a given path prefix
@@ -238,13 +244,18 @@ func (c *Cache) Stats() CacheStats {
 	}
 }
 
-// CacheStats describes a union's Stat cache, as UnionFS.CacheStats reports
-// it. Every field is zero when the cache is disabled.
+// CacheStats describes a union's Stat cache and lookup cache, as
+// UnionFS.CacheStats reports them. The Stat cache's fields are zero when it
+// is disabled, and the lookup cache's when it is.
 type CacheStats struct {
-	Enabled           bool          // whether the cache is on
-	StatCacheSize     int           // cached Stat results, live or expired
+	Enabled           bool          // whether the Stat cache is on
+	StatCacheSize     int           // cached Stat and Lstat results, live or expired
 	NegativeCacheSize int           // cached misses, live or expired
 	MaxEntries        int           // bound on entries of each kind
 	StatTTL           time.Duration // how long a Stat result is served
 	NegativeTTL       time.Duration // how long a miss is served
+
+	LookupEnabled bool          // whether the lookup cache is on (WithLookupCache)
+	LookupEntries int           // names it holds, found or missing, live or expired
+	LookupTTL     time.Duration // how long it serves a name
 }

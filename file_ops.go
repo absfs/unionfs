@@ -111,13 +111,30 @@ func (ufs *UnionFS) Stat(name string) (os.FileInfo, error) {
 
 // Lstat returns the FileInfo of name in the merged view without following a
 // symbolic link at name itself.
+// The Stat cache, when enabled, holds Lstat results too.
 func (ufs *UnionFS) Lstat(name string) (os.FileInfo, error) {
 	p := ufs.abs(name)
+	key := ""
+	if ufs.cache.enabled {
+		key = p + lstatKey
+		if info, _, ok := ufs.cache.getStat(key); ok {
+			return info, nil
+		}
+		if ufs.cache.isNegative(key) {
+			return nil, &os.PathError{Op: "lstat", Path: name, Err: os.ErrNotExist}
+		}
+	}
 	ufs.mu.RLock()
 	defer ufs.mu.RUnlock()
 	n, err := ufs.resolve(p, false)
 	if err != nil {
+		if key != "" && os.IsNotExist(err) {
+			ufs.cache.putNegative(key)
+		}
 		return nil, pathErr("lstat", name, err)
+	}
+	if key != "" {
+		ufs.cache.putStat(key, n.info, n.top())
 	}
 	return n.info, nil
 }
@@ -767,7 +784,7 @@ func (ufs *UnionFS) Lchown(name string, uid, gid int) error {
 	ufs.mu.Lock()
 	defer ufs.mu.Unlock()
 	return ufs.changeAttrs("lchown", name, false, nil, func(p string, _ *node) error {
-		if l, ok := ufs.upper().(lchowner); ok {
+		if l, ok := ufs.layers[0].fs.(lchowner); ok {
 			return l.Lchown(p, uid, gid)
 		}
 		return ufs.upper().Chown(p, uid, gid)
