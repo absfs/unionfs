@@ -59,6 +59,7 @@ func (ufs *UnionFS) Symlink(oldname, newname string) error {
 		return fail(err)
 	}
 	if err := ufs.dropWhiteout(full); err != nil {
+		_ = ufs.upper().Remove(full)
 		return fail(err)
 	}
 	return nil

@@ -200,8 +200,8 @@ func (ufs *UnionFS) writeMarker(p string) error {
 // dropWhiteout removes the whiteout for p from the writable layer, if any.
 func (ufs *UnionFS) dropWhiteout(p string) error {
 	wh := WhiteoutName(p)
-	if !ufs.layerHas(0, wh) {
-		return nil
+	if found, err := ufs.layerProbe(0, wh); err != nil || !found {
+		return err
 	}
 	if err := ufs.upper().Remove(wh); err != nil && !isNotExist(err) {
 		return err

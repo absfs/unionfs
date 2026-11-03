@@ -72,6 +72,20 @@ func (ufs *UnionFS) layerHas(i int, p string) bool {
 	return err == nil
 }
 
+// layerProbe reports whether p exists in layer i, without following links.
+// Unlike layerHas it reports failures other than absence: a whiteout or
+// opaque marker that cannot be checked must not read as missing.
+func (ufs *UnionFS) layerProbe(i int, p string) (bool, error) {
+	_, err := ufs.layerLstat(i, p)
+	switch {
+	case err == nil:
+		return true, nil
+	case isNotExist(err):
+		return false, nil
+	}
+	return false, err
+}
+
 // layerReadlink reads the symbolic link p in layer i.
 func (ufs *UnionFS) layerReadlink(i int, p string) (string, error) {
 	if r, ok := ufs.layers[i].fs.(readlinker); ok {
@@ -103,7 +117,14 @@ func (ufs *UnionFS) root() (*node, error) {
 	n := &node{path: "/", info: info}
 	for i := range ufs.layers {
 		n.layers = append(n.layers, i)
-		if i < len(ufs.layers)-1 && ufs.layerHas(i, opaquePath("/")) {
+		if i == len(ufs.layers)-1 {
+			break
+		}
+		opaque, err := ufs.layerProbe(i, opaquePath("/"))
+		if err != nil {
+			return nil, err
+		}
+		if opaque {
 			break
 		}
 	}
@@ -137,7 +158,14 @@ func (ufs *UnionFS) child(dir *node, name string) (*node, error) {
 				}
 				out.layers = append(out.layers, li)
 			}
-			if hidesBelow && ufs.layerHas(li, opaquePath(p)) {
+			if !hidesBelow {
+				continue
+			}
+			opaque, err := ufs.layerProbe(li, opaquePath(p))
+			if err != nil {
+				return nil, err
+			}
+			if opaque {
 				break
 			}
 			continue
@@ -145,7 +173,14 @@ func (ufs *UnionFS) child(dir *node, name string) (*node, error) {
 		if !isNotExist(err) {
 			return nil, err
 		}
-		if hidesBelow && ufs.layerHas(li, WhiteoutName(p)) {
+		if !hidesBelow {
+			continue
+		}
+		whited, err := ufs.layerProbe(li, WhiteoutName(p))
+		if err != nil {
+			return nil, err
+		}
+		if whited {
 			break
 		}
 	}
@@ -219,20 +254,25 @@ func (ufs *UnionFS) resolveParent(op, p string) (*node, string, error) {
 // inside dir if the writable layer had neither it nor its whiteout: that is,
 // whether deleting name needs a whiteout, and creating a directory there
 // needs an opaque marker.
-func (ufs *UnionFS) lowerHas(dir *node, name string) bool {
+func (ufs *UnionFS) lowerHas(dir *node, name string) (bool, error) {
 	p := path.Join(dir.path, name)
 	for k, li := range dir.layers {
 		if li == 0 && ufs.writableLayer != nil {
 			continue
 		}
-		if ufs.layerHas(li, p) {
-			return true
+		found, err := ufs.layerProbe(li, p)
+		if err != nil || found {
+			return found, err
 		}
-		if k < len(dir.layers)-1 && ufs.layerHas(li, WhiteoutName(p)) {
-			return false
+		if k == len(dir.layers)-1 {
+			break
+		}
+		whited, err := ufs.layerProbe(li, WhiteoutName(p))
+		if err != nil || whited {
+			return false, err
 		}
 	}
-	return false
+	return false, nil
 }
 
 // listDir returns the merged entries of directory dir, sorted by name.
@@ -245,10 +285,13 @@ func (ufs *UnionFS) listDir(dir *node) ([]fs.DirEntry, error) {
 	for k, li := range dir.layers {
 		ents, err := ufs.layers[li].fs.ReadDir(dir.path)
 		if err != nil {
-			if k == 0 {
-				return nil, err
+			// A lower layer that lost the directory since it was resolved
+			// contributes nothing; any other failure would make the
+			// listing silently incomplete, so it is reported.
+			if k > 0 && isNotExist(err) {
+				continue
 			}
-			continue
+			return nil, err
 		}
 		var hidden []string
 		for _, e := range ents {

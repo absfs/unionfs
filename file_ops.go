@@ -170,6 +170,7 @@ func (ufs *UnionFS) OpenFile(name string, flag int, perm os.FileMode) (absfs.Fil
 	ufs.invalidate(full)
 	if err := ufs.dropWhiteout(full); err != nil {
 		f.Close()
+		_ = ufs.upper().Remove(full)
 		return nil, pathErr("open", name, err)
 	}
 	return f, nil
@@ -195,6 +196,9 @@ func (ufs *UnionFS) openRead(name, p string, flag int, perm os.FileMode) (absfs.
 // EEXIST. A name with the whiteout prefix is refused with EPERM.
 func (ufs *UnionFS) createTarget(op, p string, follow bool) (*node, string, error) {
 	for links := 0; ; links++ {
+		if p == "/" {
+			return nil, "", &os.PathError{Op: op, Path: p, Err: os.ErrExist}
+		}
 		dir, base, err := ufs.resolveParent(op, p)
 		if err != nil {
 			return nil, "", err
@@ -253,16 +257,25 @@ func (ufs *UnionFS) mkdirAt(dir *node, base string, perm os.FileMode) error {
 	if err := ufs.ensureUpperDir(dir); err != nil {
 		return err
 	}
-	opaque := ufs.lowerHas(dir, base)
+	opaque, err := ufs.lowerHas(dir, base)
+	if err != nil {
+		return err
+	}
 	if err := ufs.upper().Mkdir(p, perm); err != nil {
 		return err
 	}
 	if opaque {
-		if err := ufs.writeMarker(opaquePath(p)); err != nil {
-			return err
-		}
+		err = ufs.writeMarker(opaquePath(p))
 	}
-	return ufs.dropWhiteout(p)
+	if err == nil {
+		err = ufs.dropWhiteout(p)
+	}
+	if err != nil {
+		// Leave the name as it was rather than half made.
+		_ = ufs.upper().RemoveAll(p)
+		return err
+	}
+	return nil
 }
 
 // MkdirAll creates directory name and any missing parents in the writable
@@ -340,8 +353,10 @@ func (ufs *UnionFS) Remove(name string) error {
 // removeNode deletes n from the writable layer, recursively when all is
 // set, and writes a whiteout when a lower layer still has its name.
 func (ufs *UnionFS) removeNode(n *node, all bool) error {
-	base := path.Base(n.path)
-	needWhiteout := ufs.lowerHas(n.parent, base)
+	needWhiteout, err := ufs.lowerHas(n.parent, path.Base(n.path))
+	if err != nil {
+		return err
+	}
 	if ufs.inUpper(n) {
 		up := ufs.upper()
 		var err error
@@ -476,8 +491,14 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 		}
 	}
 
-	srcLower := ufs.lowerHas(src.parent, path.Base(src.path))
-	dstLower := ufs.lowerHas(dstDir, base)
+	srcLower, err := ufs.lowerHas(src.parent, path.Base(src.path))
+	if err != nil {
+		return fail(err)
+	}
+	dstLower, err := ufs.lowerHas(dstDir, base)
+	if err != nil {
+		return fail(err)
+	}
 
 	// Bring the source wholly into the writable layer.
 	err = nil
