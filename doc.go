@@ -94,11 +94,11 @@ an opaque marker records that its directory replaced the lower one (the
 lower directory's entries are all gone, and its entries in the writable
 layer are the whole new contents), and every other entry was created,
 modified, or copied up because its metadata changed; reserved ".wh..wh."
-names are not part of the changeset. IsWhiteout,
-IsOpaqueMarker, WhiteoutTarget and WhiteoutName recognise and build marker
-names; they take slash-separated names without a trailing slash, so convert
-a host path with filepath.ToSlash first. See the README for a worked
-example.
+names are not part of the changeset. IsWhiteout, IsOpaqueMarker,
+WhiteoutTarget and WhiteoutName recognise and build marker names; they take
+slash-separated names without a trailing slash, so convert a host path with
+filepath.ToSlash first. See the example for WhiteoutTarget, and the README,
+for a walk that does this.
 
 Linux overlayfs records the same facts differently (character devices 0/0
 for whiteouts, an xattr for opaque directories); unionfs does not read or
@@ -115,9 +115,10 @@ union that keep their own working directory.
 WithStatCache and WithCacheConfig enable a cache of Stat results. Changes
 made through the union drop the entries at and under the paths they touch,
 both as the caller named them and as they resolved. Changes made to a layer
-directly, and changes seen through another symbolic link to the changed
-path, show once the entry expires, or after InvalidateCache,
-InvalidateCacheTree or ClearCache.
+directly, writes through a file handle the union returned (OpenFile drops
+the entry only when the file is opened), and changes seen through another
+symbolic link to the changed path, show once the entry expires, or after
+InvalidateCache, InvalidateCacheTree or ClearCache.
 
 # Concurrency
 
@@ -142,9 +143,17 @@ reading the lower copy after another handle copies it up.
   - Renaming a large lower directory copies its whole tree.
   - Operations are not atomic against layer failures: a change that fails
     part way (a full disk, say) can leave its copy-up behind, though not a
-    half-written file, and does not bring back deleted entries.
-  - Paths are normalised lexically: a trailing slash is dropped, so
-    Stat("/file/") succeeds on a regular file, and an empty name means the
-    working directory.
+    half-written file, and does not bring back deleted entries. A Remove,
+    RemoveAll or Rename whose last step, deleting the old upper copy, fails
+    has taken effect in the merged view, leaves a hidden ".wh..wh.unionfs.<n>"
+    leftover, and reports the error.
+  - The caller's path is normalised lexically: a trailing slash is dropped,
+    so Stat("/file/") succeeds on a regular file, and an empty name means
+    the working directory, except that Remove and Rename fail with ENOENT
+    for it and RemoveAll does nothing, as the os functions do. A name ending
+    in "." or ".." fails with EINVAL in all three. A symbolic link's target
+    is not cleaned: it is walked element by element, so a ".." after a
+    linked directory leaves the directory that link resolves to, as on a
+    host.
 */
 package unionfs

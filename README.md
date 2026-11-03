@@ -113,7 +113,9 @@ More, compiled and checked by `go test`, in
   directory is hidden.
 - **Symbolic links resolved against the union.** A link in the upper can
   point at a file only the lower has, and a link in the lower can point
-  into the upper. Loops fail with `ELOOP` after 40 links.
+  into the upper. A target is walked element by element, as a kernel does,
+  so a `..` after a linked directory leaves the directory that link
+  resolves to. Loops fail with `ELOOP` after 40 links.
 - **Copy-up on every kind of change:** opening for write, `Truncate`,
   `Chmod`, `Chown`, `Lchown`, `Chtimes`. Mode and modification time are
   kept; links are copied as links; `O_TRUNC` and `Truncate(0)` skip the
@@ -124,8 +126,8 @@ More, compiled and checked by `go test`, in
   below it, just as on a host.
 - **Deletes that leave no trace when they can.** `Remove` and `RemoveAll`
   write a whiteout only when a lower layer still has the name. A directory
-  removes when its merged view is empty, and takes its whiteouts with it.
-  `RemoveAll` of a lower tree writes one whiteout.
+  can be removed once its merged view is empty, and takes its whiteouts
+  with it. `RemoveAll` of a lower tree writes one whiteout.
 - **Failures do not resurrect deleted files.** Whiteouts are written before
   the upper entry goes and taken back if it cannot; a directory is renamed
   aside before it is deleted; a `Rename` never deletes its target before
@@ -205,8 +207,9 @@ Things to know when capturing:
   copied up because its mode, owner or times changed. Compare against the
   lower to tell.
 - A renamed lower file appears as a whiteout at the old name and a file
-  at the new one; a renamed lower directory as a whiteout and a complete,
-  marker-free copy.
+  at the new one; a renamed lower directory as a whiteout and a complete
+  copy with no markers inside it, except an opaque marker at its top when
+  a lower layer also had the new name.
 - Linux overlayfs records the same facts as character devices 0/0 and the
   `trusted.overlay.opaque` xattr. unionfs neither reads nor writes that
   form; a tool reading both kinds of upper has to handle both.
@@ -248,16 +251,26 @@ change fails with `ErrNoWritableLayer`.
   lower keeps reading the lower copy after another handle writes it.
 - **Not atomic against layer failures:** a change that fails part way (a
   full disk) can leave a completed copy-up behind, never a half-written
-  file, and never brings back a deleted entry. A deletion whose last step
-  fails can leave a hidden `.wh..wh.unionfs.<n>` leftover, and reports the
-  error.
-- **Paths are normalised lexically.** A trailing slash is dropped
-  (`Stat("/file/")` succeeds on a regular file) and an empty name means the
-  working directory, unlike `os.Stat`.
+  file, and never brings back a deleted entry. A `Remove`, `RemoveAll` or
+  `Rename` whose last step (deleting the old upper copy) fails has already
+  taken effect in the merged view; it leaves a hidden
+  `.wh..wh.unionfs.<n>` leftover and reports the error.
+- **The caller's path is normalised lexically.** A trailing slash is
+  dropped (`Stat("/file/")` succeeds on a regular file) and an empty name
+  means the working directory, unlike `os.Stat`. The destructive calls
+  follow the os package instead: `Remove("")` and `Rename` with an empty
+  name fail with `ENOENT`, `RemoveAll("")` does nothing, and a name ending
+  in `.` or `..` fails with `EINVAL` in all three. Link targets are not
+  cleaned (see Features).
 - **The Stat cache** is dropped for paths changed through the union, by
-  the path the caller gave and the path it resolved to, but not for changes
-  made to a layer directly, or seen through another symbolic link, until
-  the entry expires.
+  the path the caller gave and the path it resolved to. It is not dropped
+  for changes made to a layer directly, for writes through an open handle
+  (`OpenFile` drops the entry when it opens the file, so a `Stat` taken
+  between the open and a `Write` keeps the old size), or for changes seen
+  through another symbolic link, until the entry expires. Call
+  `InvalidateCache` after such a change, or leave the cache off (the
+  default) when files are written through long-lived handles, as an NFS
+  server does.
 - **Locking:** changes take an exclusive lock for their metadata work
   (including a copy-up), lookups share a read lock; file I/O through open
   handles takes none.
@@ -292,9 +305,9 @@ go test -race ./...
 go test -coverprofile=cover.out . && go tool cover -func=cover.out | tail -1
 ```
 
-Statement coverage is about 97% for the package and 96% for the module,
-including the composition example, which a smoke test runs. The tests run the [fstesting](https://github.com/absfs/fstesting) suite
-over memfs layers and over host directories (basefs over osfs), replay a
+Statement coverage is about 97% for both the package and the module,
+including the composition example, which a smoke test runs. The tests run
+the [fstesting](https://github.com/absfs/fstesting) suite over memfs layers and over host directories (basefs over osfs), replay a
 developer's session in a workspace and check the upper on disk marker by
 marker, check permission handling against a host (read-only lower
 directories, renames the host refuses), inject layer failures at each step

@@ -40,9 +40,11 @@ match POSIX, and callers relying on the old ones should read
   writes one whiteout whenever a lower layer has the name.
 - Symbolic links were followed inside a single layer, so an upper link to
   a lower-only file did not resolve; they are now resolved against the
-  union. Copy-up of a lower link (by `Rename` or `Lchown`) turned it into a
-  regular file holding its target's contents; links are now copied as
-  links.
+  union. A target is walked element by element rather than cleaned as
+  text, so a `..` after a linked directory leaves the directory that link
+  resolves to, as on a host. Copy-up of a lower link (by `Rename` or
+  `Lchown`) turned it into a regular file holding its target's contents;
+  links are now copied as links.
 - `Chmod` on a directory dropped its directory bit on layers that store the
   mode verbatim (memfs). Copy-up kept no mode on directories created for a
   parent path; parents are now copied up with their mode and times, and
@@ -52,7 +54,10 @@ match POSIX, and callers relying on the old ones should read
 - Copying up below a read-only lower directory (0555) works, as the change
   does on a host: the union grants itself write permission on the
   copied-up directory just while it copies the entry in, then restores the
-  lower mode.
+  lower mode. The same applies to the union's own markers: `Mkdir` with a
+  mode its owner cannot write (0555) over a deleted lower directory still
+  writes the opaque marker, and a `Rename` that replaces an emptied
+  read-only directory deletes the replaced copy, whiteouts and all.
 - A failed `Rename` could delete its target: when the move failed for any
   reason and the target was in the writable layer, the target was removed
   and the move retried. The target is now renamed aside and put back if
@@ -93,6 +98,11 @@ These may affect existing callers:
   directory fail with `ENOENT`, as on any other filesystem; v1.0.0 created
   the parents silently. Use `MkdirAll` first.
 - `RemoveAll` of a missing path returns nil, like `os.RemoveAll`.
+- `Remove`, `RemoveAll` and `Rename` treat an empty name and a name ending
+  in `.` or `..` as the os functions do, instead of acting on the working
+  directory or its parent: `RemoveAll("")` returns nil and does nothing,
+  `Remove("")` and `Rename` with an empty name fail with `ENOENT`, and a
+  name ending in `.` or `..` fails with `EINVAL`.
 - `ReadDir` sorts by name (byte order), as `absfs.Filer` specifies; v1.0.0
   sorted case-insensitively.
 - Layer errors other than "not found" are reported. v1.0.0 read a failing

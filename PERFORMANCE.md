@@ -96,9 +96,14 @@ ufs := unionfs.New(
 ### Cache Invalidation
 
 The cache is automatically invalidated on write operations:
-- `Create`, `OpenFile` (write mode), `Mkdir`, `MkdirAll`
+- `Create`, `OpenFile` (write mode), `Mkdir`, `MkdirAll`, `Symlink`
 - `Remove`, `RemoveAll`, `Rename`
-- `Chmod`, `Chown`, `Chtimes`
+- `Chmod`, `Chown`, `Lchown`, `Chtimes`, `Truncate`
+
+It is not invalidated by changes made to a layer directly, by writes
+through an open file handle after `OpenFile` returned it, or by changes
+seen through another symbolic link to the same file; see the Stat cache
+caveat in the [README](README.md#caveats).
 
 Manual invalidation when needed:
 
@@ -466,12 +471,15 @@ for i := 0; i < 10000; i++ {
 
 ### Problem: Stale Data
 
-**Symptoms**: Reading old file contents
+**Symptoms**: Stale `Stat` results (size, mode, modification time or
+existence). The cache holds `Stat` results only, never file contents.
 
 **Solutions**:
 1. Reduce cache TTL
 2. Manually invalidate: `ufs.InvalidateCache(path)`
 3. Don't modify layers directly - always use UnionFS interface
+4. After writing through a long-lived handle, call `InvalidateCache`, or
+   leave the cache disabled
 
 ### Problem: Slow Writes
 

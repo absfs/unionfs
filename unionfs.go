@@ -110,9 +110,11 @@ func WithStatCache(enabled bool, ttl time.Duration) Option {
 // found and missing paths and a bound on entries per kind.
 //
 // Changes made through the union drop the cached entries at and under the
-// paths they touch. Changes made to a layer directly, and changes seen
-// through another path to the same file (a symbolic link), show only once
-// the entry expires.
+// paths they touch. Changes made to a layer directly, writes through an open
+// file handle (OpenFile drops the entry only when the file is opened, so a
+// Stat between the open and a Write caches the old size), and changes seen
+// through another path to the same file (a symbolic link) show only once the
+// entry expires, or after InvalidateCache.
 func WithCacheConfig(enabled bool, statTTL, negativeTTL time.Duration, maxEntries int) Option {
 	return func(ufs *UnionFS) {
 		ufs.cache = newCache(enabled, statTTL, negativeTTL, maxEntries)
