@@ -41,7 +41,8 @@ Every change goes to the writable layer:
     owner cannot write (0555) works, as the change would on a host: the
     union makes the copied-up directory writable just while it copies the
     entry in. O_CREATE alone on an existing file is a read and copies
-    nothing up.
+    nothing up, and so is a Chtimes of a lower entry that changes only its
+    access time: see UnionFS.Chtimes.
   - A new file, directory or link is created in the writable layer, and a
     whiteout for its name, if any, is removed.
   - Remove and RemoveAll delete the writable layer's copy and write a

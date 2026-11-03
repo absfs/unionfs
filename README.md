@@ -120,7 +120,8 @@ More, compiled and checked by `go test`, in
   `Chmod`, `Chown`, `Lchown`, `Chtimes`. Mode and modification time are
   kept; links are copied as links; `O_TRUNC` and `Truncate(0)` skip the
   contents; `O_CREATE` on an existing file without a write flag is a read
-  and copies nothing. Copying up does not change the directories it
+  and copies nothing, and so does a `Chtimes` that changes only a lower
+  entry's access time. Copying up does not change the directories it
   passes through: their mode and modification time stay as the lower's,
   and a read-only lower ancestor (0555) does not stop a change to a file
   below it, just as on a host.
@@ -225,7 +226,7 @@ Things to know when capturing:
 | `Remove`                                | ENOTEMPTY unless the merged view is empty; whiteout only if a lower layer has the name                         |
 | `RemoveAll`                             | upper copy deleted, one whiteout if a lower layer has the name; nil for a missing path                         |
 | `Rename`                                | rename(2) rules; sources copied up; whiteout at the old name if a lower layer has it                           |
-| `Chmod`, `Chown`, `Chtimes`, `Truncate` | follow links, copy up, change the upper copy                                                                   |
+| `Chmod`, `Chown`, `Chtimes`, `Truncate` | follow links, copy up, change the upper copy; `Chtimes` of the access time alone copies nothing (below)        |
 | `Lchown`                                | does not follow a final link; copies a link up as a link                                                       |
 | `Symlink`                               | in the upper; the target is stored as given and resolved against the union                                     |
 
@@ -237,12 +238,21 @@ change fails with `ErrNoWritableLayer`.
 ## Caveats
 
 - **Ownership is not copied up,** only mode and modification time.
-- **Access-time updates copy up too,** since `Chtimes` changes a file and
-  only the writable layer can record it. Served over NFS this matters: the
-  macOS client (NFSv3 and NFSv4) sends a SETATTR of the access time after a
-  program reads a file through `mmap`, so without `noatime` on the mount every
-  git object or pack that `git log` or `git status` reads is copied up.
-  Mount with `noatime`; reads then copy nothing.
+- **Access-time-only updates of lower entries are dropped,** not copied
+  up. `Chtimes` of a name only lower layers have (a file, a link's target
+  or a directory) copies nothing and returns nil when `mtime` is the zero
+  `Time` (which `os.Chtimes` takes as "leave unchanged") or equals the
+  lower entry's current modification time. `os.FileInfo` has no access
+  time, so the change could not be seen through the union anyway; a host
+  layer's `FileInfo.Sys()` keeps reporting the lower file's own access
+  time. Any other `mtime`, even one nanosecond off, copies up as before,
+  and an entry already in the writable layer gets both times. This matters
+  served over NFS: the macOS client (NFSv3 and NFSv4) sends a SETATTR of
+  the access time after a program reads a file through `mmap`, and absnfs
+  turns it into `Chtimes` with the current `mtime`; before, every git
+  object or pack that `git log` or `git status` read was copied up.
+  Mounting with `noatime` still saves those round trips, but is no longer
+  needed to avoid the copies.
 - **Copy-up runs with the union's own permissions.** A lower directory
   that its owner cannot write is copied up with that mode. Changing a file
   inside or below it works, as on a host, because the union grants itself

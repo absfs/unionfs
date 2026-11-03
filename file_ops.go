@@ -654,6 +654,13 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 
 // resolveForChange resolves name for an attribute change and copies it up.
 func (ufs *UnionFS) resolveForChange(op, name string, follow bool) (*node, error) {
+	return ufs.resolveForChangeUnless(op, name, follow, nil)
+}
+
+// resolveForChangeUnless is resolveForChange, except that it returns a nil
+// node, copying nothing up, when name resolves to a node only lower layers
+// have and unchanged reports that the change leaves that node as it is.
+func (ufs *UnionFS) resolveForChangeUnless(op, name string, follow bool, unchanged func(os.FileInfo) bool) (*node, error) {
 	if ufs.writableLayer == nil {
 		return nil, ErrNoWritableLayer
 	}
@@ -661,6 +668,9 @@ func (ufs *UnionFS) resolveForChange(op, name string, follow bool) (*node, error
 	n, err := ufs.resolve(p, follow)
 	if err != nil {
 		return nil, pathErr(op, name, err)
+	}
+	if unchanged != nil && !ufs.inUpper(n) && unchanged(n.info) {
+		return nil, nil
 	}
 	ufs.invalidate(p, n.path)
 	if err := ufs.copyUp(n); err != nil {
@@ -695,11 +705,24 @@ func (ufs *UnionFS) Chown(name string, uid, gid int) error {
 
 // Chtimes changes the access and modification times of name, following
 // symbolic links, after copying it up to the writable layer.
+//
+// A change to the access time alone does not copy up. When name resolves to
+// a file, link target or directory that only lower layers have, and mtime
+// is the zero Time (which os.Chtimes takes as "leave unchanged") or equals
+// the lower entry's current modification time, Chtimes copies nothing up,
+// changes nothing and returns nil: os.FileInfo has no access time, so the
+// change could not be seen through the union, and an NFS client that
+// records reads as access-time SETATTRs would otherwise copy up every file
+// it reads. A FileInfo's Sys value from a host layer keeps reporting the
+// lower file's own access time. Any other mtime copies up as before, and
+// an entry the writable layer has gets both times.
 func (ufs *UnionFS) Chtimes(name string, atime, mtime time.Time) error {
 	ufs.mu.Lock()
 	defer ufs.mu.Unlock()
-	n, err := ufs.resolveForChange("chtimes", name, true)
-	if err != nil {
+	n, err := ufs.resolveForChangeUnless("chtimes", name, true, func(info os.FileInfo) bool {
+		return mtime.IsZero() || mtime.Equal(info.ModTime())
+	})
+	if err != nil || n == nil {
 		return err
 	}
 	return ufs.upper().Chtimes(n.path, atime, mtime)

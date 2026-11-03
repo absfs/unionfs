@@ -75,6 +75,14 @@ match POSIX, and callers relying on the old ones should read
 - Relative names were always taken from `/`; views returned by
   `FileSystem()` lost their working directory for `RemoveAll`, `Truncate`,
   `ReadDir`, `ReadFile` and `Sub`.
+- `Chtimes` copied a lower file up to change only its access time, which
+  `os.FileInfo` cannot show. The macOS NFS client sends such a SETATTR
+  after a program reads a file through `mmap`, so served through absnfs,
+  `git status` and `git log` on a packed clone copied 3.7 MB of objects
+  and packs up. `Chtimes` of a name only lower layers have now copies
+  nothing and returns nil when `mtime` is zero or equals the lower entry's
+  current modification time. Any other `mtime` copies up as before, and an
+  entry the writable layer has still gets both times.
 
 ### Added
 
