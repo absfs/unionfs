@@ -64,10 +64,10 @@ changes); with the Stat cache, which now holds `Lstat` results too, none.
 
 | Layers | Path                       | Lower alone | No cache, before | No cache | Lookup cache | Stat cache, before | Stat cache |
 | ------ | -------------------------- | ----------- | ---------------- | -------- | ------------ | ------------------ | ---------- |
-| memfs  | `/d001/f001.txt`           | 75          | 590              | 650      | 310          | 580                | 75         |
-| memfs  | `/.git/objects/pack/p.idx` | 90          | 935              | 1,060    | 510          | 940                | 90         |
-| osfs   | `/d001/f001.txt`           | 1,290       | 6,350            | 6,220    | 1,530        | 6,110              | 75         |
-| osfs   | `/.git/objects/pack/p.idx` | 1,350       | 9,290            | 9,310    | 1,810        | 9,190              | 88         |
+| memfs  | `/d001/f001.txt`           | 75          | 590              | 610      | 300          | 580                | 75         |
+| memfs  | `/.git/objects/pack/p.idx` | 85          | 935              | 975      | 490          | 940                | 90         |
+| osfs   | `/d001/f001.txt`           | 1,290       | 6,350            | 6,110    | 1,590        | 6,110              | 75         |
+| osfs   | `/.git/objects/pack/p.idx` | 1,350       | 9,290            | 9,850    | 1,810        | 9,190              | 90         |
 
 "Before" is the same benchmark on the code before the lookup cache and the
 `Lstat` entries in the Stat cache (the Stat cache did not cover `Lstat`
