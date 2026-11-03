@@ -38,6 +38,21 @@ func (ufs *UnionFS) abs(name string) string {
 	return cleanPath(name)
 }
 
+// checkRemoveName refuses names that Remove, RemoveAll and Rename must not
+// act on, as the host calls do: an empty name (ENOENT), and a name whose
+// last element is "." or ".." (EINVAL). Made absolute, these would name the
+// working directory or its parent.
+func checkRemoveName(name string) error {
+	if name == "" {
+		return syscall.ENOENT
+	}
+	trimmed := strings.TrimRight(filepath.ToSlash(name), "/")
+	if last := trimmed[strings.LastIndex(trimmed, "/")+1:]; last == "." || last == ".." {
+		return syscall.EINVAL
+	}
+	return nil
+}
+
 // pathErr reports err as a *os.PathError for op on name, the path the
 // caller gave.
 func pathErr(op, name string, err error) error {
@@ -205,16 +220,19 @@ func (ufs *UnionFS) openRead(name, p string, flag int, perm os.FileMode) (absfs.
 // through such a link does; otherwise an existing entry, link or not, is
 // EEXIST. A name with the whiteout prefix is refused with EPERM.
 func (ufs *UnionFS) createTarget(op, p string, follow bool) (*node, string, error) {
-	for links := 0; ; links++ {
-		if p == "/" {
-			return nil, "", &os.PathError{Op: op, Path: p, Err: os.ErrExist}
-		}
-		dir, base, err := ufs.resolveParent(op, p)
+	if p == "/" {
+		return nil, "", &os.PathError{Op: op, Path: p, Err: os.ErrExist}
+	}
+	links := 0
+	var start *node // where a relative link target is walked from
+	for {
+		dir, base, err := ufs.parentFrom(op, start, p, &links)
 		if err != nil {
 			return nil, "", err
 		}
+		full := path.Join(dir.path, base)
 		if IsWhiteout(base) {
-			return nil, "", &os.PathError{Op: op, Path: p, Err: syscall.EPERM}
+			return nil, "", &os.PathError{Op: op, Path: full, Err: syscall.EPERM}
 		}
 		c, err := ufs.child(dir, base)
 		if err != nil {
@@ -224,22 +242,23 @@ func (ufs *UnionFS) createTarget(op, p string, follow bool) (*node, string, erro
 			return nil, "", err
 		}
 		if !follow || !isSymlink(c.info) {
-			return nil, "", &os.PathError{Op: op, Path: p, Err: os.ErrExist}
+			return nil, "", &os.PathError{Op: op, Path: full, Err: os.ErrExist}
 		}
 		// resolve has already refused a chain this long for OpenFile, the
 		// only caller that follows; this bound guards against layers
 		// changed underneath the union.
-		if links >= maxSymlinks {
-			return nil, "", &os.PathError{Op: op, Path: p, Err: syscall.ELOOP}
+		links++
+		if links > maxSymlinks {
+			return nil, "", &os.PathError{Op: op, Path: full, Err: syscall.ELOOP}
 		}
 		target, err := ufs.layerReadlink(c.top(), c.path)
 		if err != nil {
 			return nil, "", err
 		}
-		if !path.IsAbs(target) {
-			target = path.Join(dir.path, target)
-		}
-		p = cleanPath(target)
+		// The target is walked as stored, from the link's directory, so
+		// that a ".." after a linked directory in it steps out of the
+		// directory that link resolves to.
+		p, start = target, dir
 	}
 }
 
@@ -280,7 +299,9 @@ func (ufs *UnionFS) mkdirAt(dir *node, base string, perm os.FileMode) error {
 		return err
 	}
 	if opaque {
-		err = ufs.writeMarker(opaquePath(p))
+		// perm may lack owner write permission (0555): the marker is
+		// bookkeeping, written under keepDir's grant as the others are.
+		err = ufs.keepDir(p, func() error { return ufs.writeMarker(opaquePath(p)) })
 	}
 	if err == nil {
 		err = ufs.dropWhiteout(p)
@@ -305,7 +326,7 @@ func (ufs *UnionFS) MkdirAll(name string, perm os.FileMode) error {
 	ufs.mu.Lock()
 	defer ufs.mu.Unlock()
 
-	cur, err := ufs.root(false)
+	cur, err := ufs.root()
 	if err != nil {
 		return pathErr("mkdir", name, err)
 	}
@@ -349,10 +370,14 @@ func (ufs *UnionFS) MkdirAll(name string, perm os.FileMode) error {
 // copy may still hold whiteouts, and they are removed with it. Whatever the
 // writable layer has is deleted; a whiteout is written only when a lower
 // layer still has the name, so deleting a file that exists only in the
-// writable layer leaves no trace.
+// writable layer leaves no trace. As with os.Remove, an empty name fails with
+// ENOENT, and a name ending in "." or ".." with EINVAL.
 func (ufs *UnionFS) Remove(name string) error {
 	if ufs.writableLayer == nil {
 		return ErrNoWritableLayer
+	}
+	if err := checkRemoveName(name); err != nil {
+		return &os.PathError{Op: "remove", Path: name, Err: err}
 	}
 	p := ufs.abs(name)
 	ufs.mu.Lock()
@@ -407,7 +432,7 @@ func (ufs *UnionFS) removeNode(n *node, all bool) error {
 		return nil
 	}
 	if n.info.IsDir() {
-		err = ufs.discard(n.path, n.info, all)
+		err = ufs.discard(n.path, all)
 	} else {
 		err = ufs.upper().Remove(n.path)
 	}
@@ -437,11 +462,18 @@ func (ufs *UnionFS) removeUpper(n *node, all bool) error {
 
 // RemoveAll removes name and everything under it from the merged view. The
 // writable layer's copy is deleted, and a single whiteout for name hides
-// whatever lower layers have. It returns nil when name does not exist.
-// RemoveAll("/") removes every entry of the root.
+// whatever lower layers have. It returns nil when name does not exist, and,
+// as os.RemoveAll does, for an empty name. A name ending in "." or ".."
+// fails with EINVAL. RemoveAll("/") removes every entry of the root.
 func (ufs *UnionFS) RemoveAll(name string) error {
 	if ufs.writableLayer == nil {
 		return ErrNoWritableLayer
+	}
+	if name == "" {
+		return nil
+	}
+	if err := checkRemoveName(name); err != nil {
+		return &os.PathError{Op: "removeall", Path: name, Err: err}
 	}
 	p := ufs.abs(name)
 	ufs.mu.Lock()
@@ -487,12 +519,19 @@ func (ufs *UnionFS) RemoveAll(name string) error {
 // the cost is proportional to its size; a directory only the writable layer
 // has is moved directly. A moved directory is made opaque when a lower layer
 // has newname. A whiteout is left at oldname when a lower layer still has it.
+// An empty name fails with ENOENT, and a name ending in "." or ".." with
+// EINVAL.
 func (ufs *UnionFS) Rename(oldname, newname string) error {
 	if ufs.writableLayer == nil {
 		return ErrNoWritableLayer
 	}
-	op, np := ufs.abs(oldname), ufs.abs(newname)
 	fail := func(err error) error { return linkErr("rename", oldname, newname, err) }
+	for _, name := range []string{oldname, newname} {
+		if err := checkRemoveName(name); err != nil {
+			return fail(err)
+		}
+	}
+	op, np := ufs.abs(oldname), ufs.abs(newname)
 	ufs.mu.Lock()
 	defer ufs.mu.Unlock()
 
@@ -601,7 +640,9 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 		})
 	}
 	if aside != "" {
-		if rerr := up.RemoveAll(aside); err == nil {
+		// The replaced target was an empty directory in the merged view,
+		// so its upper copy holds at most the union's markers.
+		if rerr := ufs.deleteAside(aside, isDir); err == nil {
 			err = rerr
 		}
 	}

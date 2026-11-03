@@ -282,7 +282,7 @@ func (ufs *UnionFS) asideName(dir string) (string, error) {
 // part way. When contents is false the tree is a directory holding only the
 // union's markers, which are removed even if it is read-only. A failure
 // after the rename leaves a hidden leftover and is reported.
-func (ufs *UnionFS) discard(p string, info os.FileInfo, contents bool) error {
+func (ufs *UnionFS) discard(p string, contents bool) error {
 	up := ufs.upper()
 	tmp, err := ufs.asideName(path.Dir(p))
 	if err != nil {
@@ -291,10 +291,18 @@ func (ufs *UnionFS) discard(p string, info os.FileInfo, contents bool) error {
 	if err := up.Rename(p, tmp); err != nil {
 		return err
 	}
-	if !contents {
-		_ = ufs.chmodUpper(tmp, info.Mode(), 0700)
+	return ufs.deleteAside(tmp, !contents)
+}
+
+// deleteAside deletes the writable layer's tree at aside, which the union
+// renamed there to delete it. When markersOnly is set it is a directory
+// holding only the union's markers, and is made writable first, so that a
+// read-only one goes as rmdir(2) would let an empty one go.
+func (ufs *UnionFS) deleteAside(aside string, markersOnly bool) error {
+	if markersOnly {
+		_ = ufs.chmodUpper(aside, os.ModeDir, 0700)
 	}
-	return up.RemoveAll(tmp)
+	return ufs.upper().RemoveAll(aside)
 }
 
 // moveUpper renames from to to in the writable layer, replacing an existing

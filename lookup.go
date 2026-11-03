@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"sort"
+	"strings"
 	"syscall"
 )
 
@@ -105,20 +106,13 @@ func isSymlink(info os.FileInfo) bool {
 	return info.Mode()&os.ModeSymlink != 0
 }
 
-// root resolves "/". Its info is read only when withInfo is set: walking
-// through the root needs only its layers.
-func (ufs *UnionFS) root(withInfo bool) (*node, error) {
+// root resolves "/" without its info: walking through the root needs only
+// its layers, and walk reads the info when a path ends there.
+func (ufs *UnionFS) root() (*node, error) {
 	if len(ufs.layers) == 0 {
 		return nil, &os.PathError{Op: "stat", Path: "/", Err: os.ErrNotExist}
 	}
 	n := &node{path: "/"}
-	if withInfo {
-		info, err := ufs.layers[0].fs.Stat("/")
-		if err != nil {
-			return nil, err
-		}
-		n.info = info
-	}
 	for i := range ufs.layers {
 		n.layers = append(n.layers, i)
 		if i == len(ufs.layers)-1 {
@@ -199,42 +193,85 @@ func (ufs *UnionFS) child(dir *node, name string) (*node, error) {
 // element too when follow is set. Links are resolved against the union.
 func (ufs *UnionFS) resolve(p string, follow bool) (*node, error) {
 	links := 0
-	return ufs.walk(p, follow, &links)
+	return ufs.walk(nil, p, follow, &links)
 }
 
-func (ufs *UnionFS) walk(p string, follow bool, links *int) (*node, error) {
-	elems := splitPath(p)
-	cur, err := ufs.root(len(elems) == 0)
-	if err != nil {
-		return nil, err
+// walk resolves the slash-separated path p element by element, from the
+// root when p is absolute or start is nil, and from directory start
+// otherwise. p need not be clean: a symbolic link's target is walked as
+// stored, so a ".." steps to the parent of the directory reached so far,
+// which is where a link before it resolved to, as POSIX requires, not to
+// wherever cleaning the text would lead. links counts the links followed.
+func (ufs *UnionFS) walk(start *node, p string, follow bool, links *int) (*node, error) {
+	cur := start
+	if cur == nil {
+		r, err := ufs.root()
+		if err != nil {
+			return nil, err
+		}
+		cur = r
 	}
-	for i, name := range elems {
-		if cur.parent != nil && !cur.info.IsDir() {
+	if path.IsAbs(p) {
+		cur = rootOf(cur)
+	}
+	elems := strings.Split(p, "/")
+	for len(elems) > 0 {
+		name := elems[0]
+		elems = elems[1:]
+		// Only the root is reached without its info, and it is a
+		// directory.
+		if cur.info != nil && !cur.info.IsDir() {
 			return nil, &os.PathError{Op: "lstat", Path: p, Err: syscall.ENOTDIR}
+		}
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			if cur.parent != nil {
+				cur = cur.parent
+			}
+			continue
 		}
 		next, err := ufs.child(cur, name)
 		if err != nil {
 			return nil, err
 		}
-		last := i == len(elems)-1
-		if isSymlink(next.info) && (follow || !last) {
-			*links++
-			if *links > maxSymlinks {
-				return nil, &os.PathError{Op: "lstat", Path: p, Err: syscall.ELOOP}
-			}
-			target, err := ufs.layerReadlink(next.top(), next.path)
-			if err != nil {
-				return nil, err
-			}
-			if !path.IsAbs(target) {
-				target = path.Join(cur.path, target)
-			}
-			rest := append([]string{target}, elems[i+1:]...)
-			return ufs.walk(cleanPath(path.Join(rest...)), follow, links)
+		if !isSymlink(next.info) || !(follow || len(elems) > 0) {
+			cur = next
+			continue
 		}
-		cur = next
+		*links++
+		if *links > maxSymlinks {
+			return nil, &os.PathError{Op: "lstat", Path: p, Err: syscall.ELOOP}
+		}
+		target, err := ufs.layerReadlink(next.top(), next.path)
+		if err != nil {
+			return nil, err
+		}
+		if target == "" {
+			return nil, &os.PathError{Op: "lstat", Path: next.path, Err: os.ErrNotExist}
+		}
+		if path.IsAbs(target) {
+			cur = rootOf(cur)
+		}
+		elems = append(strings.Split(target, "/"), elems...)
+	}
+	if cur.info == nil {
+		info, err := ufs.layers[0].fs.Stat("/")
+		if err != nil {
+			return nil, err
+		}
+		cur.info = info
 	}
 	return cur, nil
+}
+
+// rootOf returns the root node n was reached from.
+func rootOf(n *node) *node {
+	for n.parent != nil {
+		n = n.parent
+	}
+	return n
 }
 
 // resolveParent resolves the directory that would hold p, following
@@ -244,14 +281,36 @@ func (ufs *UnionFS) resolveParent(op, p string) (*node, string, error) {
 	if p == "/" {
 		return nil, "", &os.PathError{Op: op, Path: p, Err: syscall.EINVAL}
 	}
-	dir, err := ufs.resolve(path.Dir(p), true)
+	links := 0
+	return ufs.parentFrom(op, nil, p, &links)
+}
+
+// parentFrom resolves the directory that would hold the possibly unclean
+// path p, walked from directory start as walk does, and returns it with p's
+// last element. It fails with ENOTDIR when that is not a directory, with
+// ENOENT for an empty p (an empty link target), and with EEXIST when p
+// ends in "." or ".." and resolves, since it then names an existing
+// directory. start, when given, is a directory.
+func (ufs *UnionFS) parentFrom(op string, start *node, p string, links *int) (*node, string, error) {
+	if p == "" {
+		return nil, "", &os.PathError{Op: op, Path: p, Err: os.ErrNotExist}
+	}
+	trimmed := strings.TrimRight(p, "/")
+	i := strings.LastIndex(trimmed, "/")
+	dirPart, base := trimmed[:i+1], trimmed[i+1:]
+	if base == "" || base == "." || base == ".." {
+		if _, err := ufs.walk(start, p, true, links); err != nil {
+			return nil, "", err
+		}
+		return nil, "", &os.PathError{Op: op, Path: p, Err: os.ErrExist}
+	}
+	// A non-empty dirPart ends in a slash, so walk itself refuses a
+	// non-directory at its end; an empty one is start or the root.
+	dir, err := ufs.walk(start, dirPart, true, links)
 	if err != nil {
 		return nil, "", err
 	}
-	if !dir.info.IsDir() {
-		return nil, "", &os.PathError{Op: op, Path: p, Err: syscall.ENOTDIR}
-	}
-	return dir, path.Base(p), nil
+	return dir, base, nil
 }
 
 // lowerHas reports whether a layer below the writable one would show name

@@ -285,3 +285,56 @@ func TestOSLayersRemoveReadOnlyDirectory(t *testing.T) {
 	must(t, ufs.Remove("/u"))
 	wantNames(t, hostTree(t, upperDir), "/.wh.w")
 }
+
+// TestOSLayersMkdirReadOnlyOverWhiteout recreates a deleted lower directory
+// with a mode its owner cannot write. The opaque marker that keeps the old
+// lower entries out is the union's bookkeeping, and must be written anyway,
+// as `mkdir -m 555` succeeds on a host.
+func TestOSLayersMkdirReadOnlyOverWhiteout(t *testing.T) {
+	skipIfRoot(t)
+	ufs, upperDir, lowerDir := osLayers(t)
+	hostWrite(t, filepath.Join(lowerDir, "d", "old"), "old")
+	hostWrite(t, filepath.Join(lowerDir, "e", "old"), "old")
+	for _, d := range []string{"d", "e", "fresh"} {
+		d := filepath.Join(upperDir, d)
+		t.Cleanup(func() { _ = os.Chmod(d, 0755) })
+	}
+
+	must(t, ufs.RemoveAll("/d"))
+	must(t, ufs.Mkdir("/d", 0555))
+	must(t, ufs.RemoveAll("/e"))
+	must(t, ufs.MkdirAll("/e", 0555))
+	must(t, ufs.Mkdir("/fresh", 0555))
+	for _, d := range []string{"/d", "/e", "/fresh"} {
+		wantNames(t, list(t, ufs, d))
+		info, err := ufs.Stat(d)
+		must(t, err)
+		if info.Mode().Perm() != 0555 {
+			t.Fatalf("mode of %s = %v, want 0555", d, info.Mode())
+		}
+	}
+	wantNames(t, hostTree(t, upperDir),
+		"/d/", "/d/.wh.__dir_opaque", "/e/", "/e/.wh.__dir_opaque", "/fresh/")
+}
+
+// TestOSLayersRenameOntoReadOnlyEmptiedDir renames a directory onto a
+// read-only directory whose merged view is empty but whose upper copy still
+// holds whiteouts. The replaced copy is the union's to delete, as rename(2)
+// replaces an empty directory whatever its mode.
+func TestOSLayersRenameOntoReadOnlyEmptiedDir(t *testing.T) {
+	skipIfRoot(t)
+	ufs, upperDir, lowerDir := osLayers(t)
+	hostWrite(t, filepath.Join(lowerDir, "dst", "x"), "x")
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(upperDir, "dst"), 0755) })
+	must(t, ufs.Remove("/dst/x"))
+	must(t, ufs.Chmod("/dst", 0555))
+	must(t, ufs.Mkdir("/src", 0755))
+	put(t, ufs, "/src/n", "n")
+
+	must(t, ufs.Rename("/src", "/dst"))
+	wantNames(t, list(t, ufs, "/dst"), "n")
+	wantNotExist(t, ufs, "/src")
+	// No leftover: the replaced copy and its whiteout are gone, and the
+	// moved directory is opaque over the lower /dst.
+	wantNames(t, hostTree(t, upperDir), "/dst/", "/dst/.wh.__dir_opaque", "/dst/n")
+}
