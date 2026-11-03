@@ -495,7 +495,11 @@ func TestLookupCacheConcurrent(t *testing.T) {
 						name := fmt.Sprintf("/d/g%d-%d", g, i%4)
 						switch (g + i) % 6 {
 						case 0:
-							put(t, ufs, name, "x")
+							// t.Fatalf, as put calls, cannot end the test
+							// from this goroutine.
+							if err := writeFile(ufs, name, []byte("x"), 0644); err != nil {
+								t.Errorf("write %s: %v", name, err)
+							}
 						case 1:
 							_ = ufs.Rename(name, name+"r")
 						case 2:
