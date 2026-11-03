@@ -706,16 +706,20 @@ func (ufs *UnionFS) Chown(name string, uid, gid int) error {
 // Chtimes changes the access and modification times of name, following
 // symbolic links, after copying it up to the writable layer.
 //
+// A zero mtime leaves the modification time as it is, as os.Chtimes does,
+// whatever the writable layer would make of a zero Time.
+//
 // A change to the access time alone does not copy up. When name resolves to
 // a file, link target or directory that only lower layers have, and mtime
-// is the zero Time (which os.Chtimes takes as "leave unchanged") or equals
-// the lower entry's current modification time, Chtimes copies nothing up,
-// changes nothing and returns nil: os.FileInfo has no access time, so the
-// change could not be seen through the union, and an NFS client that
-// records reads as access-time SETATTRs would otherwise copy up every file
-// it reads. A FileInfo's Sys value from a host layer keeps reporting the
-// lower file's own access time. Any other mtime copies up as before, and
-// an entry the writable layer has gets both times.
+// is zero or equals the lower entry's current modification time, Chtimes
+// copies nothing up, changes nothing and returns nil: os.FileInfo has no
+// access time, so the change could not be seen through the union, and an
+// NFS client that records reads as access-time SETATTRs would otherwise
+// copy up every file it reads. A FileInfo's Sys value from a host layer
+// keeps reporting the lower file's own access time. Any other mtime copies
+// up as before, and an entry the writable layer has gets both times. A
+// zero atime is passed to the writable layer as given: a host directory
+// leaves the access time alone, memfs stores the zero Time.
 func (ufs *UnionFS) Chtimes(name string, atime, mtime time.Time) error {
 	ufs.mu.Lock()
 	defer ufs.mu.Unlock()
@@ -724,6 +728,11 @@ func (ufs *UnionFS) Chtimes(name string, atime, mtime time.Time) error {
 	})
 	if err != nil || n == nil {
 		return err
+	}
+	if mtime.IsZero() {
+		// Only an entry the writable layer already has gets here with a
+		// zero mtime, and n.info is that entry as it is now.
+		mtime = n.info.ModTime()
 	}
 	return ufs.upper().Chtimes(n.path, atime, mtime)
 }

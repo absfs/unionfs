@@ -246,7 +246,8 @@ change fails with `ErrNoWritableLayer`.
   time, so the change could not be seen through the union anyway; a host
   layer's `FileInfo.Sys()` keeps reporting the lower file's own access
   time. Any other `mtime`, even one nanosecond off, copies up as before,
-  and an entry already in the writable layer gets both times. This matters
+  and an entry already in the writable layer gets both times, except that
+  a zero `mtime` leaves its modification time alone there too. This matters
   served over NFS: the macOS client (NFSv3 and NFSv4) sends a SETATTR of
   the access time after a program reads a file through `mmap`, and absnfs
   turns it into `Chtimes` with the current `mtime`; before, every git

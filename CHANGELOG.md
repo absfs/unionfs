@@ -83,6 +83,10 @@ match POSIX, and callers relying on the old ones should read
   nothing and returns nil when `mtime` is zero or equals the lower entry's
   current modification time. Any other `mtime` copies up as before, and an
   entry the writable layer has still gets both times.
+- `Chtimes` with a zero `mtime` on an entry the writable layer has passed
+  the zero `Time` on, and a memfs writable layer stored it, giving the
+  file a modification time in 1754. A zero `mtime` now leaves the
+  modification time as it is, as `os.Chtimes` does.
 
 ### Added
 

@@ -91,6 +91,19 @@ func TestChtimesUpperAppliesBoth(t *testing.T) {
 	if info, _ := ufs.Stat("/d/a"); !info.ModTime().Equal(newM) {
 		t.Fatalf("mtime %v", info.ModTime())
 	}
+
+	// A zero mtime leaves the upper entry's mtime as it is, as it does a
+	// lower entry's, even on a writable layer that would store the zero
+	// Time itself (memfs).
+	for _, p := range []string{"/new", "/d/a"} {
+		must(t, ufs.Chtimes(p, time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Time{}))
+		if info, _ := ufs.Stat(p); !info.ModTime().Equal(newM) {
+			t.Errorf("%s: zero mtime gave %v, want %v", p, info.ModTime(), newM)
+		}
+		if info, _ := upper.Stat(p); !info.ModTime().Equal(newM) {
+			t.Errorf("%s: upper mtime %v, want %v", p, info.ModTime(), newM)
+		}
+	}
 }
 
 // The no-copy-up path keeps the other Chtimes outcomes: a missing name and
@@ -145,6 +158,26 @@ func TestChtimesAccessTimeOnlyOsfs(t *testing.T) {
 	// the requested access time to a lower layer.
 	if a, ok := hostAtime(host); ok && a.Equal(read) {
 		t.Fatalf("lower atime set to %v", a)
+	}
+	// Through the union, a FileInfo's Sys value still reports the lower
+	// file's own access time: the one set above, or one the host recorded
+	// for the reads.
+	for p, file := range map[string]string{
+		"/objects/pack/p.pack": "objects/pack/p.pack",
+		"/HEADLINK":            "objects/ab",
+	} {
+		info, err := ufs.Stat(p)
+		must(t, err)
+		a, ok := hostAtime(info)
+		if !ok {
+			continue
+		}
+		onDisk, err := os.Stat(filepath.Join(lowerDir, file))
+		must(t, err)
+		diskA, _ := hostAtime(onDisk)
+		if a.Equal(read) || !(a.Equal(lowerA) || a.Equal(diskA)) {
+			t.Errorf("%s: union Sys atime %v, want the lower's (%v or %v)", p, a, lowerA, diskA)
+		}
 	}
 
 	// A new mtime copies up as before, contents and all.
