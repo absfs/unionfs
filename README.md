@@ -147,13 +147,12 @@ All changes land in the writable layer. Whiteouts use the `.wh.<name>`
 naming of AUFS and OCI/Docker image layers; the opaque marker does not (see
 below). The format, exactly:
 
-| On disk in the writable layer                 | Meaning                                                        |
-| --------------------------------------------- | -------------------------------------------------------------- |
-| `dir/.wh.<name>`, an empty regular file       | `dir/<name>` was deleted, with everything under it             |
-| `dir/.wh.__dir_opaque`, an empty regular file | `dir` replaced the lower `dir`: none of the lower entries show |
-| any other file, link or directory             | created, modified, or copied up because its metadata changed   |
-
-| `dir/.wh..wh.unionfs.<n>`, a file or directory | nothing: a leftover from a failed operation, safe to delete     |
+| On disk in the writable layer                  | Meaning                                                        |
+| ---------------------------------------------- | -------------------------------------------------------------- |
+| `dir/.wh.<name>`, an empty regular file        | `dir/<name>` was deleted, with everything under it             |
+| `dir/.wh.__dir_opaque`, an empty regular file  | `dir` replaced the lower `dir`: none of the lower entries show |
+| any other file, link or directory              | created, modified, or copied up because its metadata changed   |
+| `dir/.wh..wh.unionfs.<n>`, a file or directory | nothing: a leftover from a failed operation, safe to delete    |
 
 `WhiteoutPrefix` is `".wh."` and `OpaqueWhiteout` is `".wh.__dir_opaque"`.
 A whiteout and an entry of the same name never coexist in the writable
