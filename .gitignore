@@ -12,9 +12,7 @@
 *.out
 
 # Example binaries
-examples/*/basic
-examples/*/multi-layer
-examples/*/testing
+examples/absfs-composition/absfs-composition
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
