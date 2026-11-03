@@ -121,8 +121,9 @@ func Example_opaqueDirectory() {
 
 // The writable layer is a changeset against the layers below it. Walk it
 // and classify each entry: a whiteout records a deletion, an opaque marker
-// records that a directory replaced the one below, and anything else was
-// written (created, modified, or copied up because its mode or times
+// records that a directory replaced the one below, a reserved .wh..wh. name
+// (a leftover from a failed operation) records nothing, and anything else
+// was written (created, modified, or copied up because its mode or times
 // changed).
 func ExampleWhiteoutTarget() {
 	base := newMemFS()
@@ -138,6 +139,9 @@ func ExampleWhiteoutTarget() {
 	ufs.RemoveAll("/src/gen")
 	ufs.Mkdir("/src/gen", 0755)
 	write(ufs, "/src/gen/b.go", "package gen")
+	// What a layer failure part way through a delete can leave behind.
+	upper.MkdirAll("/src/.wh..wh.unionfs.1", 0755)
+	write(upper, "/src/.wh..wh.unionfs.1/stale.go", "package main")
 
 	var changes []string
 	var walk func(dir string)
@@ -145,13 +149,16 @@ func ExampleWhiteoutTarget() {
 		ents, _ := upper.ReadDir(dir)
 		for _, e := range ents {
 			p := path.Join(dir, e.Name())
-			if unionfs.IsOpaqueMarker(p) {
+			switch deleted, isWhiteout := unionfs.WhiteoutTarget(p); {
+			case unionfs.IsOpaqueMarker(p):
 				changes = append(changes, "replace "+dir)
-			} else if deleted, ok := unionfs.WhiteoutTarget(p); ok {
+			case isWhiteout:
 				changes = append(changes, "delete  "+deleted)
-			} else if e.IsDir() {
+			case unionfs.IsWhiteout(p):
+				// A reserved .wh..wh. name: not part of the changeset.
+			case e.IsDir():
 				walk(p)
-			} else {
+			default:
 				changes = append(changes, "write   "+p)
 			}
 		}
