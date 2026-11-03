@@ -22,6 +22,14 @@ const (
 	// below show through it.
 	OpaqueWhiteout = ".wh.__dir_opaque"
 
+	// MetaPrefix starts the name of a metadata marker. An empty regular
+	// file named MetaPrefix+name in a directory of the writable layer
+	// records a change to the mode, times or owner of name, a regular file
+	// that only the layers below have, without a copy of its contents: the
+	// marker's own permission bits, modification time and owner are the
+	// file's. See MetaMarkerName.
+	MetaPrefix = WhiteoutPrefix + WhiteoutPrefix + "meta."
+
 	// internalPrefix starts the names the union gives entries it is about
 	// to delete or has replaced. Such a name is hidden like a whiteout but
 	// deletes nothing; one is left behind only when a layer fails part way

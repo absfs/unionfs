@@ -24,11 +24,17 @@ const maxSymlinks = 40
 // first. A non-directory has exactly one. A directory has every layer, from
 // the top one down, in which the same path is also a directory, stopping
 // after a layer that holds a whiteout for it or an opaque marker inside it.
+//
+// A regular file that only lower layers have may have a metadata marker in
+// a layer above (see MetaTarget): meta is then the marker's info, metaLayer
+// its layer, and info the file's own info with the marker's metadata.
 type node struct {
-	path   string
-	info   os.FileInfo // from layers[0]
-	layers []int
-	parent *node // nil for the root
+	path      string
+	info      os.FileInfo // from layers[0]
+	layers    []int
+	parent    *node       // nil for the root
+	meta      os.FileInfo // the metadata marker's info, or nil
+	metaLayer int         // the layer that holds meta
 }
 
 // top returns the index of the layer the node's info came from.
@@ -146,6 +152,11 @@ func (ufs *UnionFS) child(dir *node, name string) (*node, error) {
 			if out == nil {
 				out = &node{path: p, info: info, layers: []int{li}, parent: dir}
 				if !info.IsDir() {
+					if info.Mode().IsRegular() {
+						if err := ufs.findMeta(dir, k, out); err != nil {
+							return nil, err
+						}
+					}
 					return out, nil
 				}
 			} else {
@@ -344,6 +355,7 @@ func (ufs *UnionFS) lowerHas(dir *node, name string) (bool, error) {
 // are never listed.
 func (ufs *UnionFS) listDir(dir *node) ([]fs.DirEntry, error) {
 	seen := make(map[string]bool)
+	metas := make(map[string]fs.DirEntry) // metadata markers in the layers above
 	var out []fs.DirEntry
 	for k, li := range dir.layers {
 		ents, err := ufs.layers[li].fs.ReadDir(dir.path)
@@ -357,6 +369,7 @@ func (ufs *UnionFS) listDir(dir *node) ([]fs.DirEntry, error) {
 			return nil, err
 		}
 		var hidden []string
+		var marked []fs.DirEntry
 		for _, e := range ents {
 			name := e.Name()
 			if name == "." || name == ".." {
@@ -365,6 +378,8 @@ func (ufs *UnionFS) listDir(dir *node) ([]fs.DirEntry, error) {
 			if IsWhiteout(name) {
 				if t, ok := WhiteoutTarget(name); ok {
 					hidden = append(hidden, t)
+				} else if IsMetaMarker(name) {
+					marked = append(marked, e)
 				}
 				continue
 			}
@@ -372,10 +387,19 @@ func (ufs *UnionFS) listDir(dir *node) ([]fs.DirEntry, error) {
 				continue
 			}
 			seen[name] = true
+			if m, ok := metas[name]; ok && e.Type().IsRegular() {
+				e = metaDirEntry{DirEntry: e, meta: m}
+			}
 			out = append(out, e)
 		}
 		for _, h := range hidden {
 			seen[h] = true
+		}
+		for _, m := range marked {
+			t, _ := MetaTarget(m.Name())
+			if _, ok := metas[t]; !ok {
+				metas[t] = m
+			}
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })

@@ -326,9 +326,12 @@ func TestMetadataOperations(t *testing.T) {
 		t.Fatalf("failed to chmod: %v", err)
 	}
 
-	// File should be copied to overlay
-	if _, err := overlay.Stat("/test.txt"); err != nil {
-		t.Error("file should be copied to overlay after chmod")
+	// Only the file's metadata marker goes to the overlay.
+	if _, err := overlay.Stat("/test.txt"); err == nil {
+		t.Error("chmod copied the file to the overlay")
+	}
+	if _, err := overlay.Stat(MetaMarkerName("/test.txt")); err != nil {
+		t.Error("metadata marker should be in the overlay after chmod")
 	}
 
 	// Check new permissions

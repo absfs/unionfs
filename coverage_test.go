@@ -334,15 +334,14 @@ func TestAbsFSAdapterChown(t *testing.T) {
 
 	adapter := &absFSAdapter{ufs: ufs}
 
-	// Chown is typically a no-op on in-memory filesystems, but it should trigger copy-up
+	// Chown of a lower file writes its metadata marker, not a copy.
 	err := adapter.Chown("/test.txt", 1000, 1000)
 	if err != nil {
 		t.Fatalf("Chown failed: %v", err)
 	}
 
-	// File should now exist in overlay (copy-up)
-	if _, err := overlay.Stat("/test.txt"); err != nil {
-		t.Error("file should be in overlay after Chown")
+	if _, err := overlay.Stat("/.wh..wh.meta.test.txt"); err != nil {
+		t.Error("metadata marker should be in overlay after Chown")
 	}
 }
 
@@ -1166,7 +1165,11 @@ func TestCopyBufferSize(t *testing.T) {
 	}
 
 	// Trigger copy-up
-	ufs.Chmod("/test.txt", 0600)
+	f, err := ufs.OpenFile("/test.txt", os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
 
 	// Verify file was copied
 	if _, err := overlay.Stat("/test.txt"); err != nil {
@@ -1365,15 +1368,21 @@ func TestChown(t *testing.T) {
 		WithReadOnlyLayer(base),
 	)
 
-	// Chown should trigger copy-up
+	// Chown of a lower file writes its metadata marker, not a copy.
 	err := ufs.Chown("/test.txt", 1000, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// File should be in overlay
-	if _, err := overlay.Stat("/test.txt"); err != nil {
-		t.Error("file should be in overlay after Chown")
+	if _, err := overlay.Stat("/test.txt"); err == nil {
+		t.Error("Chown copied the file up")
+	}
+	info, err := ufs.Stat("/test.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uid, gid, ok := ownerOf(info); !ok || uid != 1000 || gid != 1000 {
+		t.Errorf("owner %d:%d (%v), want 1000:1000", uid, gid, ok)
 	}
 }
 

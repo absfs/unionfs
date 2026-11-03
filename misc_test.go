@@ -329,8 +329,10 @@ func TestLchownOfLowerLink(t *testing.T) {
 	if exists(mem, "/top") {
 		t.Fatal("Lchown copied up the link's target")
 	}
-	// Chown follows the link to its target.
+	// Chown follows the link to its target, a lower file, and changes
+	// the target's metadata marker: once with the lower owner as the
+	// marker is made, once with the new one.
 	upper.calls = nil
 	must(t, ufs.Chown("/ln", os.Getuid(), os.Getgid()))
-	wantNames(t, upper.calls, "chown /top")
+	wantNames(t, upper.calls, "chown /.wh..wh.meta.top", "chown /.wh..wh.meta.top")
 }

@@ -211,7 +211,11 @@ func (ufs *UnionFS) openRead(name, p string, flag int, perm os.FileMode) (absfs.
 	if n.info.IsDir() {
 		return newUnionDir(ufs, n.path), nil
 	}
-	return ufs.layers[n.top()].fs.OpenFile(n.path, flag, perm)
+	f, err := ufs.layers[n.top()].fs.OpenFile(n.path, flag, perm)
+	if err != nil || n.meta == nil {
+		return f, err
+	}
+	return metaFile{File: f, meta: n.meta}, nil
 }
 
 // createTarget finds where a new entry for absolute path p goes: the
@@ -429,6 +433,12 @@ func (ufs *UnionFS) removeNode(n *node, all bool) error {
 		return err
 	}
 	if !ufs.inUpper(n) {
+		// A metadata marker goes with the file it changed; the
+		// whiteout already hides both.
+		if err := ufs.dropMeta(n); err != nil {
+			_ = ufs.upper().Remove(wh)
+			return err
+		}
 		return nil
 	}
 	if n.info.IsDir() {
@@ -625,6 +635,10 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 	}
 
 	err = ufs.dropWhiteout(dp)
+	if err == nil && dst != nil {
+		// A replaced lower file's metadata marker no longer applies.
+		err = ufs.dropMeta(dst)
+	}
 	if err == nil && materialized {
 		err = ufs.stripMarkers(dp)
 	}
@@ -652,105 +666,112 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 	return nil
 }
 
-// resolveForChange resolves name for an attribute change and copies it up.
-func (ufs *UnionFS) resolveForChange(op, name string, follow bool) (*node, error) {
-	return ufs.resolveForChangeUnless(op, name, follow, nil)
-}
-
-// resolveForChangeUnless is resolveForChange, except that it returns a nil
-// node, copying nothing up, when name resolves to a node only lower layers
-// have and unchanged reports that the change leaves that node as it is.
-func (ufs *UnionFS) resolveForChangeUnless(op, name string, follow bool, unchanged func(os.FileInfo) bool) (*node, error) {
+// changeAttrs resolves name, following a final symbolic link when follow
+// is set, and applies an attribute change to it with set, which is given the
+// path in the writable layer to change and the resolved node.
+//
+// A regular file that only lower layers have is not copied up: set changes
+// its metadata marker instead (see setMeta). Anything else that only lower
+// layers have is copied up first. When unchanged is given and reports that
+// the change leaves a node only lower layers have as it is, nothing is
+// copied up or changed.
+func (ufs *UnionFS) changeAttrs(op, name string, follow bool, unchanged func(os.FileInfo) bool, set func(p string, n *node) error) error {
 	if ufs.writableLayer == nil {
-		return nil, ErrNoWritableLayer
+		return ErrNoWritableLayer
 	}
 	p := ufs.abs(name)
 	n, err := ufs.resolve(p, follow)
 	if err != nil {
-		return nil, pathErr(op, name, err)
+		return pathErr(op, name, err)
 	}
 	if unchanged != nil && !ufs.inUpper(n) && unchanged(n.info) {
-		return nil, nil
+		return nil
 	}
 	ufs.invalidate(p, n.path)
-	if err := ufs.copyUp(n); err != nil {
-		return nil, pathErr(op, name, err)
+	if !ufs.inUpper(n) && n.info.Mode().IsRegular() {
+		if err := ufs.setMeta(n, func(m string) error { return set(m, n) }); err != nil {
+			return pathErr(op, name, err)
+		}
+		return nil
 	}
-	return n, nil
+	if err := ufs.copyUp(n); err != nil {
+		return pathErr(op, name, err)
+	}
+	return set(n.path, n)
 }
 
-// Chmod changes the mode of name, following symbolic links, after copying
-// it up to the writable layer.
+// Chmod changes the mode of name, following symbolic links. A regular file
+// only lower layers have keeps its contents there: the new mode goes to its
+// metadata marker in the writable layer (see MetaTarget). Anything else
+// only lower layers have is copied up first.
 func (ufs *UnionFS) Chmod(name string, mode os.FileMode) error {
 	ufs.mu.Lock()
 	defer ufs.mu.Unlock()
-	n, err := ufs.resolveForChange("chmod", name, true)
-	if err != nil {
-		return err
-	}
-	return ufs.chmodUpper(n.path, n.info.Mode(), mode)
+	return ufs.changeAttrs("chmod", name, true, nil, func(p string, n *node) error {
+		return ufs.chmodUpper(p, n.info.Mode(), mode)
+	})
 }
 
-// Chown changes the owner of name, following symbolic links, after copying
-// it up to the writable layer.
+// Chown changes the owner of name, following symbolic links, as Chmod
+// changes its mode: through a metadata marker for a regular file only lower
+// layers have, after a copy-up for anything else they alone have.
 func (ufs *UnionFS) Chown(name string, uid, gid int) error {
 	ufs.mu.Lock()
 	defer ufs.mu.Unlock()
-	n, err := ufs.resolveForChange("chown", name, true)
-	if err != nil {
-		return err
-	}
-	return ufs.upper().Chown(n.path, uid, gid)
+	return ufs.changeAttrs("chown", name, true, nil, func(p string, _ *node) error {
+		return ufs.upper().Chown(p, uid, gid)
+	})
 }
 
 // Chtimes changes the access and modification times of name, following
-// symbolic links, after copying it up to the writable layer.
+// symbolic links, as Chmod changes its mode: through a metadata marker for a
+// regular file only lower layers have, after a copy-up for anything else
+// they alone have.
 //
 // A zero mtime leaves the modification time as it is, as os.Chtimes does,
 // whatever the writable layer would make of a zero Time.
 //
-// A change to the access time alone does not copy up. When name resolves to
-// a file, link target or directory that only lower layers have, and mtime
-// is zero or equals the lower entry's current modification time, Chtimes
-// copies nothing up, changes nothing and returns nil: os.FileInfo has no
-// access time, so the change could not be seen through the union, and an
-// NFS client that records reads as access-time SETATTRs would otherwise
-// copy up every file it reads. A FileInfo's Sys value from a host layer
-// keeps reporting the lower file's own access time. Any other mtime copies
-// up as before, and an entry the writable layer has gets both times. A
-// zero atime is passed to the writable layer as given: a host directory
-// leaves the access time alone, memfs stores the zero Time.
+// A change to the access time alone changes nothing below the writable
+// layer. When name resolves to a file, link target or directory that only
+// lower layers have, and mtime is zero or equals its current modification
+// time (a metadata marker's, if one changes it), Chtimes writes nothing and
+// returns nil: os.FileInfo has no access time, so the change could not be
+// seen through the union, and an NFS client that records reads as
+// access-time SETATTRs would otherwise write for every file it reads. A
+// FileInfo's Sys value from a host layer keeps reporting the lower file's
+// own access time. Any other mtime is applied as above, and an entry the
+// writable layer has gets both times. A zero atime is passed to the
+// writable layer as given: a host directory leaves the access time alone,
+// memfs stores the zero Time.
 func (ufs *UnionFS) Chtimes(name string, atime, mtime time.Time) error {
 	ufs.mu.Lock()
 	defer ufs.mu.Unlock()
-	n, err := ufs.resolveForChangeUnless("chtimes", name, true, func(info os.FileInfo) bool {
+	unchanged := func(info os.FileInfo) bool {
 		return mtime.IsZero() || mtime.Equal(info.ModTime())
+	}
+	return ufs.changeAttrs("chtimes", name, true, unchanged, func(p string, n *node) error {
+		m := mtime
+		if m.IsZero() {
+			// Only an entry the writable layer already has gets here
+			// with a zero mtime, and n.info is that entry as it is now.
+			m = n.info.ModTime()
+		}
+		return ufs.upper().Chtimes(p, atime, m)
 	})
-	if err != nil || n == nil {
-		return err
-	}
-	if mtime.IsZero() {
-		// Only an entry the writable layer already has gets here with a
-		// zero mtime, and n.info is that entry as it is now.
-		mtime = n.info.ModTime()
-	}
-	return ufs.upper().Chtimes(n.path, atime, mtime)
 }
 
 // Lchown changes the owner of name without following a symbolic link at
-// name, after copying it up to the writable layer. A writable layer without
-// Lchown gets Chown.
+// name, as Chown does otherwise; a link only lower layers have is copied up
+// as a link. A writable layer without Lchown gets Chown.
 func (ufs *UnionFS) Lchown(name string, uid, gid int) error {
 	ufs.mu.Lock()
 	defer ufs.mu.Unlock()
-	n, err := ufs.resolveForChange("lchown", name, false)
-	if err != nil {
-		return err
-	}
-	if l, ok := ufs.upper().(lchowner); ok {
-		return l.Lchown(n.path, uid, gid)
-	}
-	return ufs.upper().Chown(n.path, uid, gid)
+	return ufs.changeAttrs("lchown", name, false, nil, func(p string, _ *node) error {
+		if l, ok := ufs.upper().(lchowner); ok {
+			return l.Lchown(p, uid, gid)
+		}
+		return ufs.upper().Chown(p, uid, gid)
+	})
 }
 
 // Truncate changes the size of file name, following symbolic links. A file

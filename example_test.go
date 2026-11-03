@@ -131,6 +131,7 @@ func ExampleWhiteoutTarget() {
 	write(base, "/src/main.go", "package main")
 	write(base, "/src/old.go", "package main")
 	write(base, "/src/gen/a.go", "package gen")
+	write(base, "/src/build.sh", "#!/bin/sh")
 
 	upper := newMemFS()
 	ufs := unionfs.New(unionfs.WithWritableLayer(upper), unionfs.WithReadOnlyLayer(base))
@@ -139,6 +140,7 @@ func ExampleWhiteoutTarget() {
 	ufs.RemoveAll("/src/gen")
 	ufs.Mkdir("/src/gen", 0755)
 	write(ufs, "/src/gen/b.go", "package gen")
+	ufs.Chmod("/src/build.sh", 0755) // a metadata marker, no copy
 	// What a layer failure part way through a delete can leave behind.
 	upper.MkdirAll("/src/.wh..wh.unionfs.1", 0755)
 	write(upper, "/src/.wh..wh.unionfs.1/stale.go", "package main")
@@ -149,11 +151,16 @@ func ExampleWhiteoutTarget() {
 		ents, _ := upper.ReadDir(dir)
 		for _, e := range ents {
 			p := path.Join(dir, e.Name())
-			switch deleted, isWhiteout := unionfs.WhiteoutTarget(p); {
+			deleted, isWhiteout := unionfs.WhiteoutTarget(p)
+			changed, isMeta := unionfs.MetaTarget(p)
+			switch {
 			case unionfs.IsOpaqueMarker(p):
 				changes = append(changes, "replace "+dir)
 			case isWhiteout:
 				changes = append(changes, "delete  "+deleted)
+			case isMeta:
+				info, _ := e.Info() // the marker's mode, times and owner are the file's
+				changes = append(changes, fmt.Sprintf("meta    %s %o", changed, info.Mode().Perm()))
 			case unionfs.IsWhiteout(p):
 				// A reserved .wh..wh. name: not part of the changeset.
 			case e.IsDir():
@@ -170,6 +177,7 @@ func ExampleWhiteoutTarget() {
 	}
 	// Output:
 	// delete  /src/old.go
+	// meta    /src/build.sh 755
 	// replace /src/gen
 	// write   /src/gen/b.go
 	// write   /src/main.go

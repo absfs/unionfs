@@ -29,8 +29,9 @@ func IsOpaqueMarker(name string) bool {
 // false for anything that is not a whiteout, for the opaque marker, for the
 // bare prefix ".wh.", and for names starting with the prefix twice
 // (".wh..wh."), which are reserved for metadata as in AUFS and OCI: the
-// OCI opaque marker ".wh..wh..opq", and leftovers ".wh..wh.unionfs.<n>"
-// that the union may leave when a layer fails part way through a delete.
+// OCI opaque marker ".wh..wh..opq", metadata markers (see MetaTarget), and
+// leftovers ".wh..wh.unionfs.<n>" that the union may leave when a layer
+// fails part way through a delete.
 //
 // When reading an upper layer as a changeset, every whiteout W with
 // WhiteoutTarget(W) = (P, true) records the deletion of P.
@@ -54,6 +55,43 @@ func WhiteoutTarget(name string) (target string, ok bool) {
 func WhiteoutName(name string) string {
 	dir, base := path.Split(name)
 	return dir + WhiteoutPrefix + base
+}
+
+// IsMetaMarker reports whether name, a base name or a path, names a
+// metadata marker: its last element is MetaPrefix followed by a name. A
+// metadata marker is a whiteout by IsWhiteout's test too, since every name in
+// the reserved ".wh..wh." space is, but it hides nothing: WhiteoutTarget
+// returns false for it.
+func IsMetaMarker(name string) bool {
+	_, ok := MetaTarget(name)
+	return ok
+}
+
+// MetaTarget maps a metadata marker to the file whose metadata it records,
+// in the same directory: "a/b/.wh..wh.meta.c" gives "a/b/c" and
+// ".wh..wh.meta.c" gives "c". It returns ok false for anything else,
+// including the bare prefix.
+//
+// When reading an upper layer as a changeset, every marker M with
+// MetaTarget(M) = (P, true) records a metadata-only change of the regular
+// file P, which a lower layer has and the upper does not: P's new
+// permission bits, modification time and owner are M's own, and its
+// contents are unchanged.
+func MetaTarget(name string) (target string, ok bool) {
+	dir, base := path.Split(name)
+	if !strings.HasPrefix(base, MetaPrefix) || base == MetaPrefix {
+		return "", false
+	}
+	return dir + strings.TrimPrefix(base, MetaPrefix), true
+}
+
+// MetaMarkerName returns the metadata marker that records a metadata-only
+// change of name, in the same directory: "a/b/c" gives "a/b/.wh..wh.meta.c"
+// and "c" gives ".wh..wh.meta.c". For a name whose last element is not
+// empty, it is the inverse of MetaTarget.
+func MetaMarkerName(name string) string {
+	dir, base := path.Split(name)
+	return dir + MetaPrefix + base
 }
 
 // opaquePath returns the opaque marker path inside directory dir.

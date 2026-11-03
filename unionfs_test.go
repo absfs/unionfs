@@ -533,10 +533,10 @@ func TestChmod(t *testing.T) {
 		t.Fatalf("failed to chmod: %v", err)
 	}
 
-	// File should now exist in overlay with new permissions
-	info, err := overlay.Stat("/test.txt")
+	// The file's metadata marker, not a copy, carries the new permissions.
+	info, err := overlay.Stat("/.wh..wh.meta.test.txt")
 	if err != nil {
-		t.Fatalf("file should exist in overlay: %v", err)
+		t.Fatalf("marker should exist in overlay: %v", err)
 	}
 
 	if info.Mode().Perm() != 0600 {

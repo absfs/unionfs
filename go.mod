@@ -10,4 +10,4 @@ require (
 	github.com/absfs/osfs v1.0.0
 )
 
-require github.com/absfs/inode v1.0.0 // indirect
+require github.com/absfs/inode v1.0.0

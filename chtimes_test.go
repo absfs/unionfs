@@ -12,8 +12,9 @@ import (
 // coarse clock (Windows), and an unchanged mtime copies nothing up.
 var changedTime = time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
 
-// An access-time-only Chtimes of a name only a lower layer has copies
-// nothing up: mtime equal to the lower's, or zero. Anything else copies up.
+// An access-time-only Chtimes of a name only a lower layer has writes
+// nothing: mtime equal to the lower's, or zero. Anything else writes a
+// metadata marker for a file, or copies a directory up.
 func TestChtimesAccessTimeOnly(t *testing.T) {
 	lowerM := time.Date(2021, 1, 2, 3, 4, 5, 6, time.UTC)
 	atime := time.Date(2024, 7, 8, 9, 10, 11, 0, time.UTC)
@@ -23,20 +24,21 @@ func TestChtimesAccessTimeOnly(t *testing.T) {
 		mtime  func() time.Time
 		copied []string // paths the upper must have afterwards
 		wantM  time.Time
+		marker string // the metadata marker the upper must have, if any
 	}{
-		{"FileSameMtime", "/d/a", func() time.Time { return lowerM }, nil, lowerM},
-		{"FileSameMtimeOtherZone", "/d/a", func() time.Time { return lowerM.In(time.FixedZone("x", 3600)) }, nil, lowerM},
-		{"FileZeroMtime", "/d/a", func() time.Time { return time.Time{} }, nil, lowerM},
-		{"DirSameMtime", "/d", func() time.Time { return lowerM }, nil, lowerM},
-		{"DeepFileSameMtime", "/d/sub/c", func() time.Time { return lowerM }, nil, lowerM},
-		{"LinkTargetSameMtime", "/link", func() time.Time { return lowerM }, nil, lowerM},
+		{"FileSameMtime", "/d/a", func() time.Time { return lowerM }, nil, lowerM, ""},
+		{"FileSameMtimeOtherZone", "/d/a", func() time.Time { return lowerM.In(time.FixedZone("x", 3600)) }, nil, lowerM, ""},
+		{"FileZeroMtime", "/d/a", func() time.Time { return time.Time{} }, nil, lowerM, ""},
+		{"DirSameMtime", "/d", func() time.Time { return lowerM }, nil, lowerM, ""},
+		{"DeepFileSameMtime", "/d/sub/c", func() time.Time { return lowerM }, nil, lowerM, ""},
+		{"LinkTargetSameMtime", "/link", func() time.Time { return lowerM }, nil, lowerM, ""},
 		{"FileMtimeOneNanosecondLater", "/d/a", func() time.Time { return lowerM.Add(time.Nanosecond) },
-			[]string{"/d", "/d/a"}, lowerM.Add(time.Nanosecond)},
+			[]string{"/d"}, lowerM.Add(time.Nanosecond), "/d/.wh..wh.meta.a"},
 		{"FileNewMtime", "/d/a", func() time.Time { return atime },
-			[]string{"/d", "/d/a"}, atime},
-		{"DirNewMtime", "/d", func() time.Time { return atime }, []string{"/d"}, atime},
+			[]string{"/d"}, atime, "/d/.wh..wh.meta.a"},
+		{"DirNewMtime", "/d", func() time.Time { return atime }, []string{"/d"}, atime, ""},
 		{"LinkTargetNewMtime", "/link", func() time.Time { return atime },
-			[]string{"/d", "/d/a"}, atime},
+			[]string{"/d"}, atime, "/d/.wh..wh.meta.a"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ufs, upper, lower := newTestUnion(t)
@@ -63,7 +65,11 @@ func TestChtimesAccessTimeOnly(t *testing.T) {
 			if s := get(t, ufs, "/d/a"); s != "la" {
 				t.Errorf("contents %q", s)
 			}
-			wantNames(t, upperMarkers(t, upper))
+			if tc.marker == "" {
+				wantNames(t, upperMarkers(t, upper))
+			} else {
+				wantNames(t, upperMarkers(t, upper), tc.marker)
+			}
 		})
 	}
 }
@@ -83,6 +89,9 @@ func TestChtimesUpperAppliesBoth(t *testing.T) {
 	}
 
 	// A copied-up file: same mtime as now, new atime, still goes to the upper.
+	f, err := ufs.OpenFile("/d/a", os.O_RDWR, 0)
+	must(t, err)
+	must(t, f.Close())
 	must(t, ufs.Chtimes("/d/a", lowerM, newM))
 	if !exists(upper, "/d/a") {
 		t.Fatal("not copied up")
@@ -180,9 +189,15 @@ func TestChtimesAccessTimeOnlyOsfs(t *testing.T) {
 		}
 	}
 
-	// A new mtime copies up as before, contents and all.
+	// A new mtime writes a metadata marker and copies no data; the first
+	// open for writing copies the data up with the marker's mtime.
 	newM := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	must(t, ufs.Chtimes("/objects/ab", read, newM))
+	wantNames(t, hostTree(t, upperDir), "/objects/", "/objects/.wh..wh.meta.ab")
+	must(t, ufs.Chmod("/objects/ab", 0644)) // the lower's 0444 refuses writes
+	f, err := ufs.OpenFile("/objects/ab", os.O_WRONLY|os.O_APPEND, 0)
+	must(t, err)
+	must(t, f.Close())
 	wantNames(t, hostTree(t, upperDir), "/objects/", "/objects/ab")
 	b, err := os.ReadFile(filepath.Join(upperDir, "objects/ab"))
 	must(t, err)

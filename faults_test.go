@@ -119,6 +119,13 @@ func (f *faultFS) Chmod(p string, m os.FileMode) error {
 	return f.SymlinkFileSystem.Chmod(p, m)
 }
 
+func (f *faultFS) Chown(p string, uid, gid int) error {
+	if err := f.check("chown", p); err != nil {
+		return err
+	}
+	return f.SymlinkFileSystem.Chown(p, uid, gid)
+}
+
 func (f *faultFS) ReadDir(p string) ([]fs.DirEntry, error) {
 	if err := f.check("readdir", p); err != nil {
 		return nil, err
@@ -257,14 +264,14 @@ func TestCopyUpFailuresLeaveNoPartialFile(t *testing.T) {
 	lower.clear()
 
 	upper.failOn("chmod", "/d/a")
-	wantInjected(t, "copy-up chmod", ufs.Chtimes("/d/a", changedTime, changedTime))
+	wantInjected(t, "copy-up chmod", ufs.Truncate("/d/a", 1))
 	if exists(upper, "/d/a") {
 		t.Fatal("partial copy left in the upper")
 	}
 	upper.clear()
 
 	upper.failOn("openfile", "/d/b")
-	wantInjected(t, "copy-up create", ufs.Chtimes("/d/b", changedTime, changedTime))
+	wantInjected(t, "copy-up create", ufs.Truncate("/d/b", 1))
 	upper.clear()
 
 	ufs, upper, _ = faultUnion(t)

@@ -711,8 +711,11 @@ func TestCopyUpOnChanges(t *testing.T) {
 			if err := tc.change(ufs); err != nil {
 				t.Fatal(err)
 			}
-			if !exists(upper, "/d/a") && tc.name != "ChmodDir" {
-				t.Fatal("not copied up")
+			// A metadata change to a lower file writes its marker
+			// instead of copying it up.
+			metaOnly := tc.name == "Chmod" || tc.name == "Chtimes" || tc.name == "Chown"
+			if exists(upper, "/d/a") == metaOnly && tc.name != "ChmodDir" {
+				t.Fatalf("upper has /d/a = %v", !metaOnly)
 			}
 			tc.check(t, ufs, upper)
 			if get(t, lower, "/d/a") != "la" {
@@ -722,7 +725,11 @@ func TestCopyUpOnChanges(t *testing.T) {
 			if info.Mode().Perm() != 0640 {
 				t.Fatal("lower mode was modified")
 			}
-			wantNames(t, upperMarkers(t, upper))
+			if metaOnly {
+				wantNames(t, upperMarkers(t, upper), "/d/.wh..wh.meta.a")
+			} else {
+				wantNames(t, upperMarkers(t, upper))
+			}
 		})
 	}
 }
@@ -737,9 +744,11 @@ func TestCopyUpPreservesModeAndTime(t *testing.T) {
 	if err := lower.Chtimes("/d/b", when, when); err != nil {
 		t.Fatal(err)
 	}
-	if err := ufs.Chown("/d/b", os.Getuid(), os.Getgid()); err != nil {
+	f, err := ufs.OpenFile("/d/b", os.O_RDWR, 0)
+	if err != nil {
 		t.Fatal(err)
 	}
+	f.Close()
 	info, err := upper.Stat("/d/b")
 	if err != nil || info.Mode().Perm() != 0751 || !info.ModTime().Equal(when) {
 		t.Fatalf("copied up: %v %v %v", info.Mode(), info.ModTime(), err)

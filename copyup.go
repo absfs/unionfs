@@ -130,17 +130,28 @@ func (ufs *UnionFS) copyUpFile(n *node, withData bool) error {
 		if isSymlink(n.info) {
 			return ufs.upper().(symlinker).Symlink(target, n.path)
 		}
-		return ufs.copyUpRegular(n, withData)
+		if err := ufs.copyUpRegular(n, withData); err != nil {
+			return err
+		}
+		// The copy now carries the metadata marker's changes, so the
+		// marker goes; if it cannot, neither does the copy.
+		if err := ufs.dropMeta(n); err != nil {
+			_ = ufs.upper().Remove(n.path)
+			return err
+		}
+		return nil
 	})
 	if err != nil {
 		return err
 	}
-	n.layers = []int{0}
+	n.layers, n.meta = []int{0}, nil
 	return nil
 }
 
 // copyUpRegular copies the regular file n into the writable layer, its
 // contents only when withData is set, and removes the copy if that fails.
+// The copy gets n's mode and modification time, a metadata marker's where
+// one changes n, and the marker's owner too where the layers allow it.
 func (ufs *UnionFS) copyUpRegular(n *node, withData bool) error {
 	up := ufs.upper()
 	mode := n.info.Mode()
@@ -153,6 +164,12 @@ func (ufs *UnionFS) copyUpRegular(n *node, withData bool) error {
 	}
 	if cerr := dst.Close(); err == nil {
 		err = cerr
+	}
+	if n.meta != nil && err == nil {
+		// Before the mode: see createMeta.
+		if uid, gid, ok := ownerOf(n.meta); ok {
+			_ = up.Chown(n.path, uid, gid)
+		}
 	}
 	if err == nil {
 		err = ufs.chmodUpper(n.path, mode, mode)
