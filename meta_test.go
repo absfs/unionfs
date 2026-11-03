@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -771,5 +773,119 @@ func TestMetaConcurrent(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A lower file whose name is within len(MetaPrefix) bytes of the host's
+// limit has a marker name the host refuses: looking it up treats the
+// refused probes as no marker, and a metadata change copies it up instead.
+// Names of up to 242 bytes still get a marker.
+func TestMetaLongNames(t *testing.T) {
+	for _, n := range []int{242, 243, 245, 251, 253, 255} {
+		for _, lookup := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%d/lookup=%v", n, lookup), func(t *testing.T) {
+				_, upper, lower := metaUnion(t, "osfs")
+				opts := []Option{WithWritableLayer(upper), WithReadOnlyLayer(lower)}
+				if lookup {
+					opts = append(opts, WithLookupCache(time.Hour, 0))
+				}
+				ufs := New(opts...)
+				name := "/" + strings.Repeat("x", n)
+				put(t, lower, name, "long")
+				must(t, lower.Chmod(name, 0644))
+				wantMode(t, "Stat", stat(t, ufs, name), 0644)
+				wantMode(t, "Lstat", lstat(t, ufs, name), 0644)
+				wantMode(t, "listing", listInfo(t, ufs, "/", name[1:]), 0644)
+
+				must(t, ufs.Chmod(name, 0755))
+				must(t, ufs.Chtimes(name, changedTime, changedTime))
+				for _, info := range []os.FileInfo{stat(t, ufs, name), lstat(t, ufs, name), listInfo(t, ufs, "/", name[1:])} {
+					wantMode(t, "after Chmod", info, 0755)
+					if !info.ModTime().Equal(changedTime) {
+						t.Fatalf("mtime %v", info.ModTime())
+					}
+				}
+				if get(t, ufs, name) != "long" {
+					t.Fatal("contents")
+				}
+				marked := exists(upper, MetaMarkerName(name))
+				copied := exists(upper, name)
+				if want := n <= 242; marked != want || copied == want {
+					t.Fatalf("marker %v, copy %v", marked, copied)
+				}
+			})
+		}
+	}
+}
+
+// A writable layer that refuses a marker's name as too long, though it is
+// within the usual limit, gets a copy-up instead; a marker probe it refuses
+// so reads as no marker.
+func TestMetaMarkerNameRefused(t *testing.T) {
+	m := "/d/.wh..wh.meta.a"
+	tooLong := &os.PathError{Op: "open", Path: m, Err: syscall.ENAMETOOLONG}
+	ufs, upper, _ := faultUnion(t)
+	upper.failWith("openfile", m, tooLong)
+	must(t, ufs.Chmod("/d/a", 0750))
+	if exists(upper, m) || !exists(upper, "/d/a") {
+		t.Fatal("want a copy and no marker")
+	}
+	wantMode(t, "copy", stat(t, ufs, "/d/a"), 0750)
+
+	ufs, upper, _ = faultUnion(t)
+	must(t, ufs.Mkdir("/d/new", 0755)) // the upper has /d now
+	upper.failWith("lstat", m, tooLong)
+	wantMode(t, "no marker", stat(t, ufs, "/d/a"), 0644)
+
+	// Another failure creating the marker is reported, not hidden by a
+	// copy-up.
+	ufs, upper, _ = faultUnion(t)
+	upper.failWith("openfile", m, &os.PathError{Op: "open", Path: m, Err: syscall.EACCES})
+	if err := ufs.Chmod("/d/a", 0750); !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("err = %v, want EACCES", err)
+	}
+	if exists(upper, "/d/a") {
+		t.Fatal("copied up")
+	}
+}
+
+// OpenFile with O_RDONLY|O_CREATE of an existing file is a read, and its
+// handle reports the marker's metadata as Open's does.
+func TestMetaOpenCreateReadStat(t *testing.T) {
+	for _, kind := range layerKinds {
+		t.Run(kind, func(t *testing.T) {
+			ufs, _, _ := metaUnion(t, kind)
+			must(t, ufs.Chmod("/d/a", 0755))
+			f, err := ufs.OpenFile("/d/a", os.O_RDONLY|os.O_CREATE, 0644)
+			must(t, err)
+			defer f.Close()
+			info, err := f.Stat()
+			must(t, err)
+			wantMode(t, "handle", info, 0755)
+		})
+	}
+}
+
+// A host record from Sys carries the marker's modification and change
+// times, as ModTime does, and the lower file's access time.
+func TestMetaSysTimes(t *testing.T) {
+	ufs, upper, lower := metaUnion(t, "osfs")
+	must(t, ufs.Chtimes("/d/a", changedTime, changedTime))
+	must(t, ufs.Chmod("/d/a", 0700))
+	info := lstat(t, ufs, "/d/a")
+	mtime, ctime, ok := hostMCtime(info)
+	if !ok {
+		t.Skip("host times are not read on this platform")
+	}
+	if !mtime.Equal(info.ModTime()) || !mtime.Equal(changedTime) {
+		t.Fatalf("Sys mtime %v, ModTime %v", mtime, info.ModTime())
+	}
+	_, markerCtime, _ := hostMCtime(lstat(t, upper, "/d/.wh..wh.meta.a"))
+	if !ctime.Equal(markerCtime) {
+		t.Fatalf("Sys ctime %v, marker's %v", ctime, markerCtime)
+	}
+	lowerAtime, _ := hostAtime(lstat(t, lower, "/d/a"))
+	if atime, _ := hostAtime(info); !atime.Equal(lowerAtime) {
+		t.Fatalf("Sys atime %v, lower's %v", atime, lowerAtime)
 	}
 }

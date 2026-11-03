@@ -87,7 +87,7 @@ func (ufs *UnionFS) layerProbe(i int, p string) (bool, error) {
 	switch {
 	case err == nil:
 		return true, nil
-	case isNotExist(err):
+	case isAbsent(err):
 		return false, nil
 	}
 	return false, err
@@ -106,6 +106,15 @@ func (ufs *UnionFS) layerReadlink(i int, p string) (string, error) {
 // which for a union means the same thing.
 func isNotExist(err error) bool {
 	return os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR)
+}
+
+// isAbsent reports whether a layer error from probing for a marker means
+// the layer has no such marker. A marker's name is longer than the name it
+// is for, so a host may refuse it as too long (ENAMETOOLONG) where the
+// name itself is fine; a layer cannot hold a name it refuses, so such a
+// marker does not exist there.
+func isAbsent(err error) bool {
+	return isNotExist(err) || errors.Is(err, syscall.ENAMETOOLONG)
 }
 
 func isSymlink(info os.FileInfo) bool {
@@ -193,7 +202,7 @@ func (ufs *UnionFS) finish(cur *node, fresh bool) (*node, error) {
 			return &out, nil
 		}
 	}
-	if err != nil && !isNotExist(err) {
+	if err != nil && !isAbsent(err) {
 		return nil, err
 	}
 	ufs.lc.invalidate(cur.path)

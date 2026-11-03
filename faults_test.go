@@ -38,6 +38,13 @@ func (f *faultFS) failOn(op, p string) {
 	f.mu.Unlock()
 }
 
+// failWith makes op on p fail with err.
+func (f *faultFS) failWith(op, p string, err error) {
+	f.mu.Lock()
+	f.fails[op+" "+p] = err
+	f.mu.Unlock()
+}
+
 func (f *faultFS) clear() {
 	f.mu.Lock()
 	f.fails = map[string]error{}

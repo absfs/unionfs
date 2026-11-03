@@ -184,7 +184,7 @@ func (ufs *UnionFS) OpenFile(name string, flag int, perm os.FileMode) (absfs.Fil
 		}
 		if flag&modifyFlags == 0 {
 			// O_RDONLY|O_CREATE of an existing file is a read.
-			return ufs.layers[n.top()].fs.OpenFile(n.path, flag&^os.O_CREATE, perm)
+			return ufs.openFileNode(n, flag&^os.O_CREATE, perm)
 		}
 		if !ufs.inUpper(n) {
 			if err := ufs.copyUpFile(n, flag&os.O_TRUNC == 0); err != nil {
@@ -228,6 +228,13 @@ func (ufs *UnionFS) openRead(name, p string, flag int, perm os.FileMode) (absfs.
 	if n.info.IsDir() {
 		return newUnionDir(ufs, n.path), nil
 	}
+	return ufs.openFileNode(n, flag, perm)
+}
+
+// openFileNode opens the non-directory n for reading in the layer it comes
+// from. A file a metadata marker changes reports the marker's metadata
+// through the handle's Stat.
+func (ufs *UnionFS) openFileNode(n *node, flag int, perm os.FileMode) (absfs.File, error) {
 	f, err := ufs.layers[n.top()].fs.OpenFile(n.path, flag, perm)
 	if err != nil || n.meta == nil {
 		return f, err
@@ -692,7 +699,8 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 //
 // A regular file that only lower layers have is not copied up: set changes
 // its metadata marker instead (see setMeta). Anything else that only lower
-// layers have is copied up first. When unchanged is given and reports that
+// layers have is copied up first, and so is a regular file whose marker's
+// name would be too long for the writable layer (see metaFits). When unchanged is given and reports that
 // the change leaves a node only lower layers have as it is, nothing is
 // copied up or changed.
 func (ufs *UnionFS) changeAttrs(op, name string, follow bool, unchanged func(os.FileInfo) bool, set func(p string, n *node) error) error {
@@ -708,11 +716,16 @@ func (ufs *UnionFS) changeAttrs(op, name string, follow bool, unchanged func(os.
 		return nil
 	}
 	ufs.invalidate(p, n.path)
-	if !ufs.inUpper(n) && n.info.Mode().IsRegular() {
-		if err := ufs.setMeta(n, func(m string) error { return set(m, n) }); err != nil {
+	if !ufs.inUpper(n) && n.info.Mode().IsRegular() && metaFits(n.path) {
+		err := ufs.setMeta(n, func(m string) error { return set(m, n) })
+		if err == nil {
+			return nil
+		}
+		// A layer with a shorter limit on names than metaFits assumes
+		// gets a copy-up instead.
+		if !errors.Is(err, syscall.ENAMETOOLONG) || ufs.upperMeta(n) {
 			return pathErr(op, name, err)
 		}
-		return nil
 	}
 	if err := ufs.copyUp(n); err != nil {
 		return pathErr(op, name, err)

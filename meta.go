@@ -3,6 +3,7 @@ package unionfs
 import (
 	"io/fs"
 	"os"
+	"path"
 	"time"
 
 	"github.com/absfs/absfs"
@@ -25,11 +26,11 @@ func (i metaInfo) Mode() os.FileMode {
 // ModTime returns the marker's modification time.
 func (i metaInfo) ModTime() time.Time { return i.meta.ModTime() }
 
-// Sys returns the file's own record with the marker's owner and permission
-// bits, when both come from a layer that reports them: a host record
-// (*syscall.Stat_t, on Unix) or an *inode.Inode (memfs). A memfs record also
-// carries the marker's modification and change times. Anything else is the
-// file's own Sys value.
+// Sys returns the file's own record with the marker's owner, permission
+// bits, modification time and change time, when both come from a layer that
+// reports them: a host record (*syscall.Stat_t, on Unix) or an *inode.Inode
+// (memfs). The access time, size, inode number and link count stay the
+// file's own. Anything else is the file's own Sys value.
 func (i metaInfo) Sys() any {
 	file, meta := i.FileInfo.Sys(), i.meta.Sys()
 	if f, ok := file.(*inode.Inode); ok {
@@ -110,7 +111,7 @@ func (ufs *UnionFS) findMeta(dir *node, k int, n *node) error {
 			n.attachMeta(info, li)
 			return nil
 		}
-		if !isNotExist(err) {
+		if !isAbsent(err) {
 			return err
 		}
 	}
@@ -126,6 +127,18 @@ func (n *node) attachMeta(info os.FileInfo, li int) {
 // upperMeta reports whether n's metadata marker is in the writable layer.
 func (ufs *UnionFS) upperMeta(n *node) bool {
 	return n.meta != nil && n.metaLayer == 0 && ufs.writableLayer != nil
+}
+
+// maxNameLen is the longest name, in bytes, that the hosts unionfs runs on
+// accept in a directory (NAME_MAX on Linux, macOS and the BSDs).
+const maxNameLen = 255
+
+// metaFits reports whether the metadata marker for p has a name a host
+// accepts. A regular file whose name is within len(MetaPrefix) bytes of the
+// limit is copied up instead when its metadata changes, as it was before
+// markers existed.
+func metaFits(p string) bool {
+	return len(MetaPrefix)+len(path.Base(p)) <= maxNameLen
 }
 
 // setMeta records a metadata-only change of the regular file n, which only
