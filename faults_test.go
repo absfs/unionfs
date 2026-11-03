@@ -169,7 +169,7 @@ func TestLayerErrorsPropagate(t *testing.T) {
 	lower.clear()
 
 	upper.failOn("stat", "/")
-	_, err = ufs.Stat("/top")
+	_, err = ufs.Stat("/")
 	wantInjected(t, "Stat with a broken root", err)
 	upper.clear()
 

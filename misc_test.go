@@ -201,4 +201,18 @@ func TestMiscErrors(t *testing.T) {
 	if ufs.Name() != "UnionFS" {
 		t.Fatal("Name")
 	}
+
+	// MkdirAll follows links to directories, and stops at links to files.
+	symlink(t, lower, "/d", "/dl")
+	must(t, ufs.MkdirAll("/dl/made/deep", 0755))
+	if info, err := ufs.Stat("/d/made/deep"); err != nil || !info.IsDir() {
+		t.Fatalf("MkdirAll through a link: %v, %v", info, err)
+	}
+	symlink(t, lower, "/top", "/tl")
+	if err := ufs.MkdirAll("/tl/x", 0755); !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("MkdirAll through a link to a file: %v", err)
+	}
+	if err := ufs.MkdirAll("/m0/x", 0755); !errors.Is(err, syscall.ELOOP) {
+		t.Fatalf("MkdirAll through a loop: %v", err)
+	}
 }

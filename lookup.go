@@ -105,16 +105,20 @@ func isSymlink(info os.FileInfo) bool {
 	return info.Mode()&os.ModeSymlink != 0
 }
 
-// root resolves "/".
-func (ufs *UnionFS) root() (*node, error) {
+// root resolves "/". Its info is read only when withInfo is set: walking
+// through the root needs only its layers.
+func (ufs *UnionFS) root(withInfo bool) (*node, error) {
 	if len(ufs.layers) == 0 {
 		return nil, &os.PathError{Op: "stat", Path: "/", Err: os.ErrNotExist}
 	}
-	info, err := ufs.layers[0].fs.Stat("/")
-	if err != nil {
-		return nil, err
+	n := &node{path: "/"}
+	if withInfo {
+		info, err := ufs.layers[0].fs.Stat("/")
+		if err != nil {
+			return nil, err
+		}
+		n.info = info
 	}
-	n := &node{path: "/", info: info}
 	for i := range ufs.layers {
 		n.layers = append(n.layers, i)
 		if i == len(ufs.layers)-1 {
@@ -199,13 +203,13 @@ func (ufs *UnionFS) resolve(p string, follow bool) (*node, error) {
 }
 
 func (ufs *UnionFS) walk(p string, follow bool, links *int) (*node, error) {
-	cur, err := ufs.root()
+	elems := splitPath(p)
+	cur, err := ufs.root(len(elems) == 0)
 	if err != nil {
 		return nil, err
 	}
-	elems := splitPath(p)
 	for i, name := range elems {
-		if !cur.info.IsDir() {
+		if cur.parent != nil && !cur.info.IsDir() {
 			return nil, &os.PathError{Op: "lstat", Path: p, Err: syscall.ENOTDIR}
 		}
 		next, err := ufs.child(cur, name)

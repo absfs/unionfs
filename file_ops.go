@@ -280,7 +280,8 @@ func (ufs *UnionFS) mkdirAt(dir *node, base string, perm os.FileMode) error {
 
 // MkdirAll creates directory name and any missing parents in the writable
 // layer, as Mkdir does for each. It does nothing for a directory that
-// already exists in the merged view.
+// already exists in the merged view, and follows symbolic links to
+// directories on the way.
 func (ufs *UnionFS) MkdirAll(name string, perm os.FileMode) error {
 	if ufs.writableLayer == nil {
 		return ErrNoWritableLayer
@@ -289,26 +290,36 @@ func (ufs *UnionFS) MkdirAll(name string, perm os.FileMode) error {
 	ufs.mu.Lock()
 	defer ufs.mu.Unlock()
 
-	q := "/"
+	cur, err := ufs.root(false)
+	if err != nil {
+		return pathErr("mkdir", name, err)
+	}
 	for _, elem := range splitPath(p) {
-		q = path.Join(q, elem)
-		n, err := ufs.resolve(q, true)
-		if err == nil {
-			if !n.info.IsDir() {
-				return &os.PathError{Op: "mkdir", Path: name, Err: syscall.ENOTDIR}
+		next, err := ufs.child(cur, elem)
+		switch {
+		case os.IsNotExist(err):
+			if IsWhiteout(elem) {
+				return &os.PathError{Op: "mkdir", Path: name, Err: syscall.EPERM}
 			}
-			continue
-		}
-		if !os.IsNotExist(err) {
+			if err := ufs.mkdirAt(cur, elem, perm); err != nil {
+				return pathErr("mkdir", name, err)
+			}
+			info, err := ufs.layerLstat(0, path.Join(cur.path, elem))
+			if err != nil {
+				return pathErr("mkdir", name, err)
+			}
+			next = &node{path: path.Join(cur.path, elem), info: info, layers: []int{0}, parent: cur}
+		case err != nil:
 			return pathErr("mkdir", name, err)
+		case isSymlink(next.info):
+			if next, err = ufs.resolve(next.path, true); err != nil {
+				return pathErr("mkdir", name, err)
+			}
 		}
-		dir, base, err := ufs.createTarget("mkdir", q, false)
-		if err != nil {
-			return pathErr("mkdir", name, err)
+		if !next.info.IsDir() {
+			return &os.PathError{Op: "mkdir", Path: name, Err: syscall.ENOTDIR}
 		}
-		if err := ufs.mkdirAt(dir, base, perm); err != nil {
-			return pathErr("mkdir", name, err)
-		}
+		cur = next
 	}
 	return nil
 }
