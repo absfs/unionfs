@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"log"
 	"os"
 
 	"github.com/absfs/absfs"
@@ -16,6 +17,13 @@ func writeFile(fs absfs.FileSystem, name string, data []byte, perm os.FileMode) 
 	defer f.Close()
 	_, err = f.Write(data)
 	return err
+}
+
+// must stops the example on an error.
+func must(err error) {
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 // readFile is a helper to read files

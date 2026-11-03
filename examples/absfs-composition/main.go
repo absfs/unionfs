@@ -28,12 +28,20 @@ func basicAbsfsExample() {
 	fmt.Println("   --------------------------------")
 
 	// Create layers
-	baseLayer, err := memfs.NewFS(); if err != nil { log.Fatal(err) }
-	overlayLayer, err := memfs.NewFS(); if err != nil { log.Fatal(err) }
+	baseLayer, err := memfs.NewFS()
+	if err != nil {
+		log.Fatal(err)
+	}
+	overlayLayer, err := memfs.NewFS()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Set up base layer content
-	writeFile(baseLayer, "/etc/app.conf", []byte("base-config"), 0644)
-	writeFile(baseLayer, "/usr/bin/app", []byte("#!/bin/bash\necho base"), 0755)
+	must(baseLayer.MkdirAll("/etc", 0755))
+	must(baseLayer.MkdirAll("/usr/bin", 0755))
+	must(writeFile(baseLayer, "/etc/app.conf", []byte("base-config"), 0644))
+	must(writeFile(baseLayer, "/usr/bin/app", []byte("#!/bin/bash\necho base"), 0755))
 
 	// Create UnionFS
 	ufs := unionfs.New(
@@ -45,7 +53,7 @@ func basicAbsfsExample() {
 	fs := ufs.FileSystem()
 
 	// Use FileSystem interface methods
-	fs.Chdir("/etc")
+	must(fs.Chdir("/etc"))
 	cwd, _ := fs.Getwd()
 	fmt.Printf("   Current working directory: %s\n", cwd)
 
@@ -61,7 +69,6 @@ func basicAbsfsExample() {
 	fmt.Printf("   Read from base layer: %s\n", buf[:n])
 
 	// Write to overlay (copy-on-write in action)
-	fs.Chdir("/etc")
 	newFile, err := fs.Create("custom.conf")
 	if err != nil {
 		log.Fatal(err)
@@ -79,10 +86,17 @@ func compositionPatternExample() {
 	fmt.Println("   -------------------------------------")
 
 	// Create base UnionFS
-	baseLayer, err := memfs.NewFS(); if err != nil { log.Fatal(err) }
-	overlayLayer, err := memfs.NewFS(); if err != nil { log.Fatal(err) }
+	baseLayer, err := memfs.NewFS()
+	if err != nil {
+		log.Fatal(err)
+	}
+	overlayLayer, err := memfs.NewFS()
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	writeFile(baseLayer, "/data/file.txt", []byte("important data"), 0644)
+	must(baseLayer.MkdirAll("/data", 0755))
+	must(writeFile(baseLayer, "/data/file.txt", []byte("important data"), 0644))
 
 	ufs := unionfs.New(
 		unionfs.WithWritableLayer(overlayLayer),
@@ -109,18 +123,23 @@ func compositionPatternExample() {
 	fmt.Println()
 
 	// Demonstrate that UnionFS works with absfs patterns
-	testFile, _ := fs.Open("/data/file.txt")
+	testFile, err := fs.Open("/data/file.txt")
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer testFile.Close()
 
-	info, _ := testFile.Stat()
+	info, err := testFile.Stat()
+	if err != nil {
+		log.Fatal(err)
+	}
 	fmt.Printf("   ✓ File access works: %s (%d bytes)\n", info.Name(), info.Size())
 
 	// Show how ExtendFiler adds convenience methods
 	fmt.Println()
-	fmt.Println("   absfs.ExtendFiler pattern:")
-	fmt.Println("   • UnionFS implements Filer (8 core methods)")
-	fmt.Println("   • ExtendFiler adds FileSystem methods automatically")
-	fmt.Println("   • Result: Full FileSystem interface with minimal code")
+	fmt.Println("   absfs interfaces:")
+	fmt.Println("   • *UnionFS implements absfs.SymlinkFileSystem directly")
+	fmt.Println("   • FileSystem() gives a view with its own working directory")
 	fmt.Println("   ✓ Single responsibility + composability!")
 }
 
