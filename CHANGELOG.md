@@ -131,7 +131,7 @@ match POSIX, and callers relying on the old ones should read
   writable layer as a changeset.
 - Tests over host directories (basefs over osfs), fault injection, a
   concurrent workload under the race detector, and runnable examples.
-  Statement coverage of the package is 97%.
+  Statement coverage of the package is 98%.
 
 ### Changed
 

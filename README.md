@@ -416,7 +416,7 @@ go test -race ./...
 go test -coverprofile=cover.out . && go tool cover -func=cover.out | tail -1
 ```
 
-Statement coverage is about 97% for both the package and the module,
+Statement coverage is about 98% for the package and the module,
 including the composition example, which a smoke test runs. The tests run
 the [fstesting](https://github.com/absfs/fstesting) suite over memfs
 layers and over host directories (basefs over osfs), replay a developer's
