@@ -4,6 +4,94 @@ All notable changes to the UnionFS project will be documented in this file.
 
 ## [Unreleased]
 
+Fixes found running a union per workspace under C4's NFS workspace
+prototype, and an audit of the same kind of bug across the package.
+
+### Fixed
+
+- `Remove` wrote a whiteout for every removed file, including ones only the
+  writable layer had. It now writes one only when a lower layer still has
+  the name.
+- Removing a directory failed with "directory not empty" because of the
+  whiteouts left inside its upper copy (so `rm -r` of any lower directory
+  failed). `Remove` now refuses a directory whose merged view is not empty
+  (`ENOTEMPTY`) and removes the whiteouts of one that is.
+- A whited-out or opaque directory hid only its direct children: a
+  deeper path (`/d/sub/f` after `RemoveAll("/d")`) still resolved from the
+  lower layer. Paths are now resolved one element at a time, so a whiteout
+  hides everything under it and an opaque directory hides the lower
+  directory at every depth. A lower non-directory under an upper directory
+  of the same name is hidden too.
+- `Mkdir` and `MkdirAll` over a whited-out directory brought the old lower
+  entries back. The new directory is now opaque.
+- `Rename` of a lower directory copied up only the empty directory, losing
+  its contents; renaming over a file the writable layer had failed on
+  layers that do not replace on rename (memfs); there were no rename(2)
+  checks. `Rename` now copies up a
+  directory's whole merged tree before moving it, makes the moved directory
+  opaque when a lower layer has the new name, replaces files and empty
+  directories, and fails with `EISDIR`, `ENOTDIR`, `ENOTEMPTY`, `EINVAL`
+  and `EBUSY` as rename(2) does.
+- `RemoveAll` of a directory both layers had deleted only the upper copy,
+  and the lower one showed through again. It now deletes the upper copy and
+  writes one whiteout whenever a lower layer has the name. `RemoveAll` of a
+  missing path returns nil, like `os.RemoveAll`.
+- Symbolic links were followed inside a single layer, so an upper link to
+  a lower-only file did not resolve; they are now resolved against the
+  union. Copy-up of a lower link (by `Rename` or `Lchown`) turned it into a
+  regular file holding its target's contents; links are now copied as
+  links.
+- `Chmod` on a directory dropped its directory bit on layers that store the
+  mode verbatim (memfs). Copy-up kept no mode on directories created for a
+  parent path; parents are now copied up with their mode and times.
+- Opening a file with `O_TRUNC` copied its contents up only to discard
+  them; `Truncate(0)` likewise.
+- `Create` and `Mkdir` created missing parent directories silently; they
+  now fail with `ENOENT`, as on any other filesystem. Opening a directory
+  for writing fails with `EISDIR`; `Readlink` of a non-link fails with
+  `EINVAL` (memfs returned an empty target).
+- Names starting with `.wh.` are refused (`EPERM`) and never resolve, so a
+  marker file can no longer be read, listed or created as a regular file.
+- Relative names were always taken from `/`; views returned by
+  `FileSystem()` lost their working directory for `RemoveAll`, `Truncate`,
+  `ReadDir`, `ReadFile` and `Sub`.
+- A failing layer read as a missing file in listings and whiteout checks,
+  which could show a lower file as deleted or a deleted one as present.
+  Layer errors other than "not found" are now reported.
+- `ReadDir` sorted case-insensitively; it now sorts by name, as
+  `absfs.Filer` specifies.
+
+### Added
+
+- `*UnionFS` implements `absfs.SymlinkFileSystem` directly, adding
+  `Chdir`, `Getwd`, `TempDir` and `Truncate`.
+- `IsWhiteout`, `IsOpaqueMarker`, `WhiteoutTarget` and `WhiteoutName`, to
+  recognise marker files and map a whiteout to the name it deletes.
+- The README documents the whiteout format exactly and how to read a
+  writable layer as a changeset.
+- Tests over host directories (basefs over osfs), fault injection, a
+  concurrent workload under the race detector, and runnable examples.
+  Statement coverage is 96%.
+
+### Changed
+
+- Operations that change the union hold an exclusive lock for their
+  metadata work, so concurrent changes no longer interleave half-done
+  copy-ups; lookups share a read lock.
+- The broken stand-alone examples (written for afero) are replaced by
+  `Example` functions that `go test` runs.
+
+### Unchanged
+
+- The on-disk format: `.wh.<name>` whiteout files and the
+  `.wh.__dir_opaque` marker, both empty regular files.
+
+## [1.0.0] - 2025-12-12
+
+The notes below describe the initial release as it was planned; parts of
+them (afero compatibility, the examples directory) predate the move to
+absfs interfaces.
+
 ### Phase 1-6 Complete - Initial Production Release
 
 #### Added - Core Functionality (Phases 1-4)
@@ -172,14 +260,14 @@ func (ufs *UnionFS) CacheStats() CacheStats
 
 Benchmark results on Intel Xeon @ 2.60GHz:
 
-| Operation | Without Cache | With Cache | Improvement |
-|-----------|--------------|------------|-------------|
-| Stat | 975 ns/op | 104 ns/op | **9.4x** |
-| Negative Lookup | 1,091 ns/op | 162 ns/op | **6.7x** |
-| Read File (1KB) | 1,790 ns/op | - | - |
-| Write File (1KB) | 3,700 ns/op | - | - |
-| Copy-on-Write (10KB) | 26,000 ns/op | - | - |
-| Directory Merge (150 files) | 130,000 ns/op | - | - |
+| Operation                   | Without Cache | With Cache | Improvement |
+| --------------------------- | ------------- | ---------- | ----------- |
+| Stat                        | 975 ns/op     | 104 ns/op  | **9.4x**    |
+| Negative Lookup             | 1,091 ns/op   | 162 ns/op  | **6.7x**    |
+| Read File (1KB)             | 1,790 ns/op   | -          | -           |
+| Write File (1KB)            | 3,700 ns/op   | -          | -           |
+| Copy-on-Write (10KB)        | 26,000 ns/op  | -          | -           |
+| Directory Merge (150 files) | 130,000 ns/op | -          | -           |
 
 Layer depth scaling:
 - 2 layers: 1,632 ns/op (baseline)

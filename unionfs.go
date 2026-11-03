@@ -32,12 +32,13 @@ var (
 	// union when it was built without WithWritableLayer.
 	ErrNoWritableLayer = errors.New("no writable layer configured")
 
-	// ErrReadOnlyLayer is returned when attempting to write to a read-only
-	// layer.
+	// ErrReadOnlyLayer is not returned by this package: a union never
+	// writes to its read-only layers. It is kept for compatibility.
 	ErrReadOnlyLayer = errors.New("layer is read-only")
 )
 
-// Layer is one filesystem in a union's stack.
+// Layer is one filesystem in a union's stack. Layers are added with
+// WithWritableLayer and WithReadOnlyLayer.
 type Layer struct {
 	fs       absfs.FileSystem
 	readOnly bool

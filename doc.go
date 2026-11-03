@@ -1,219 +1,128 @@
 /*
-Package unionfs provides a layered filesystem implementation for Go with Docker-style
-overlay capabilities and copy-on-write support.
-
-# Overview
-
-UnionFS enables the composition of multiple filesystem layers into a single unified view.
-This is similar to how Docker and other container systems build images through layering,
-where each layer can add, modify, or delete files from lower layers.
-
-# Key Features
-
-  - Multiple filesystem layer composition
-  - Copy-on-write (CoW) semantics for modifications
-  - Whiteout support for deletions across layers
-  - Read-only base layers with writable overlay
-  - Efficient file lookup through layer precedence
-  - Full afero.Fs interface compatibility
-
-# Architecture
-
-The UnionFS maintains a stack of layers, ordered from top (highest precedence) to bottom.
-When a file is accessed, layers are searched from top to bottom, and the first match wins.
-Write operations always go to the topmost writable layer.
-
-# Basic Usage
-
-	package main
-
-	import (
-	    "github.com/absfs/unionfs"
-	    "github.com/spf13/afero"
-	)
-
-	func main() {
-	    // Create base layer (read-only)
-	    baseLayer := afero.NewOsFs()
-
-	    // Create overlay layer (writable)
-	    overlayLayer := afero.NewMemMapFs()
-
-	    // Create union filesystem
-	    ufs := unionfs.New(
-	        unionfs.WithWritableLayer(overlayLayer),
-	        unionfs.WithReadOnlyLayer(baseLayer),
-	    )
-
-	    // Reads fall through to base layer if not in overlay
-	    data, err := afero.ReadFile(ufs, "/etc/config.yml")
-
-	    // Writes go to overlay layer
-	    err = afero.WriteFile(ufs, "/etc/custom.yml", []byte("key: value"), 0644)
-
-	    // Modifications trigger copy-on-write
-	    file, err := ufs.OpenFile("/etc/config.yml", os.O_RDWR, 0)
-	    file.Write([]byte("modified")) // Copies to overlay first
-	}
-
-# Multiple Layers
-
-You can stack multiple read-only layers with a single writable layer on top:
+Package unionfs merges a stack of absfs filesystems into one view, with a
+writable layer on top of read-only layers: Docker-style overlays, with
+copy-on-write and whiteouts, for any absfs filesystem.
 
 	ufs := unionfs.New(
-	    unionfs.WithWritableLayer(overlayLayer),      // Top: writable
-	    unionfs.WithReadOnlyLayer(configLayer),       // Middle: configs
-	    unionfs.WithReadOnlyLayer(appLayer),          // Middle: app files
-	    unionfs.WithReadOnlyLayer(systemLayer),       // Bottom: system files
+	    unionfs.WithWritableLayer(upper),  // every change lands here
+	    unionfs.WithReadOnlyLayer(lower),  // never modified
 	)
 
-Layers are searched in order, so files in higher layers take precedence over lower layers.
+*UnionFS implements absfs.SymlinkFileSystem, so a union can be served (for
+example over NFS by absnfs), routed (switchfs), or stacked under another
+union like any other absfs filesystem.
 
-# Copy-on-Write
+# Reading
 
-When you modify a file that exists in a read-only lower layer, the file is automatically
-copied to the writable layer before modification. This ensures the original file in the
-lower layer remains unchanged:
+A path is resolved one element at a time. For each element the layers that
+contribute to the directory are asked top to bottom: the first layer that
+has the name supplies it. A non-directory hides the name in every layer
+below. A directory merges with the same directory in the layers below,
+down to a layer that holds a whiteout for it, a non-directory of the same
+name, or an opaque marker inside it. Symbolic links are resolved against the
+merged view, so a link in the writable layer may point at a file only a
+lower layer has.
 
-	// File exists in baseLayer
-	afero.WriteFile(baseLayer, "/config.txt", []byte("original"), 0644)
+ReadDir and an opened directory list the merged entries, sorted by name,
+upper layers shadowing lower ones, whited-out names left out. Whiteout and
+opaque marker files never appear in the merged view, and creating a name
+that starts with WhiteoutPrefix fails with EPERM.
 
-	// Create union with overlay
-	ufs := unionfs.New(
-	    unionfs.WithWritableLayer(overlay),
-	    unionfs.WithReadOnlyLayer(baseLayer),
-	)
+# Writing
 
-	// Modify file - triggers copy-on-write
-	afero.WriteFile(ufs, "/config.txt", []byte("modified"), 0644)
+Every change goes to the writable layer:
 
-	// Read from union gets modified version
-	data, _ := afero.ReadFile(ufs, "/config.txt")  // "modified"
+  - Opening an existing lower file for writing, truncating it, or changing
+    its mode, owner or times first copies it up: contents, mode and
+    modification time. Symbolic links are copied up as links. The
+    directories above it are copied up as empty directories with their
+    modes and times.
+  - A new file, directory or link is created in the writable layer, and a
+    whiteout for its name, if any, is removed.
+  - Remove and RemoveAll delete the writable layer's copy and write a
+    whiteout only when a lower layer still has the name. A directory can be
+    removed when its merged view is empty; whiteouts inside its upper copy
+    go with it. RemoveAll of a lower tree writes one whiteout for its root.
+  - Mkdir over a whited-out directory makes the new directory opaque, so
+    none of the old lower entries reappear under it.
+  - Rename follows rename(2): it replaces a non-directory, or an empty
+    directory when moving a directory, and fails with EISDIR, ENOTDIR,
+    ENOTEMPTY or EINVAL as rename(2) does. A file or link only a lower layer
+    has is copied up first. A directory that lower layers contribute to is
+    copied up whole, its merged tree with no markers left inside, and then
+    moved; one only the writable layer has is moved directly. The moved
+    directory is made opaque when a lower layer has the new name, and the
+    old name is whited out when a lower layer still has it.
 
-	// Base layer still has original
-	data, _ = afero.ReadFile(baseLayer, "/config.txt")  // "original"
+The read-only layers are never written to. A union built without
+WithWritableLayer is read-only: every change fails with ErrNoWritableLayer.
 
-# Whiteout Files
+# Whiteout format
 
-When you delete a file that exists in a lower layer, a whiteout marker is created in the
-writable layer. This is a special file with the prefix ".wh." that marks the file as deleted:
+The writable layer records deletions with marker files, in the AUFS
+format that Docker's image layers also use:
 
-	// File exists in base layer
-	afero.WriteFile(baseLayer, "/file.txt", []byte("content"), 0644)
+  - A whiteout is an empty regular file named WhiteoutPrefix + name
+    (".wh.name") in the directory that held name. It hides name, and
+    everything under it, in every layer below the one that holds it.
+  - The opaque marker is an empty regular file named OpaqueWhiteout
+    (".wh.__dir_opaque") inside a directory. It hides all of that
+    directory's entries in the layers below.
 
-	// Delete through union
-	ufs.Remove("/file.txt")
+A whiteout and an entry of the same name never coexist in the writable
+layer: creating the entry removes the whiteout, and a whiteout is only
+written once the entry is gone.
 
-	// Creates whiteout marker at /.wh.file.txt in overlay
-	// File no longer visible through union
-	_, err := ufs.Stat("/file.txt")  // os.ErrNotExist
+The writable layer can therefore be read on its own as a changeset against
+the layers below: a whiteout W records that WhiteoutTarget(W) was deleted,
+an opaque marker records that its directory replaced the lower one (the
+lower directory's entries are all gone, and its entries in the writable
+layer are the whole new contents), and every other entry was created,
+modified, or copied up because its metadata changed. IsWhiteout,
+IsOpaqueMarker, WhiteoutTarget and WhiteoutName recognise and build marker
+names. See the README for a worked example.
 
-	// But still exists in base layer
-	_, err = baseLayer.Stat("/file.txt")  // nil error
+Linux overlayfs records the same facts differently (character devices 0/0
+for whiteouts, an xattr for opaque directories); unionfs does not read or
+write that form.
 
-Whiteout files follow the AUFS/Docker convention using the ".wh." prefix.
+# Working directory
 
-# Directory Merging
+Relative names are taken from the union's working directory, "/" until
+Chdir changes it. FileSystem and SymlinkFileSystem return views of the
+union that keep their own working directory.
 
-When reading a directory, UnionFS merges the contents from all layers:
+# Caching
 
-	// Layer 0 has /dir/file1.txt
-	// Layer 1 has /dir/file2.txt
-	// Layer 2 has /dir/file3.txt
+WithStatCache and WithCacheConfig enable a cache of Stat results. Changes
+made through the union drop the entries at and under the paths they touch.
+Changes made to a layer directly, and changes seen through a symbolic link
+to the changed path, show once the entry expires, or after InvalidateCache,
+InvalidateCacheTree or ClearCache.
 
-	entries, _ := afero.ReadDir(ufs, "/dir")
-	// Returns all three files: file1.txt, file2.txt, file3.txt
+# Concurrency
 
-Whiteouts are respected during directory merging, so deleted files don't appear in listings.
+A UnionFS is safe for concurrent use. A change holds an exclusive lock
+while it resolves the path, copies up and writes markers; lookups and
+listings share a read lock. Reads and writes through an open file handle do
+not take the lock. A file opened for reading from a lower layer keeps
+reading the lower copy after another handle copies it up.
 
-# Use Cases
+# Caveats
 
-Configuration Management:
-
-	// Base configuration + environment-specific overrides
-	ufs := unionfs.New(
-	    unionfs.WithWritableLayer(runtimeConfig),
-	    unionfs.WithReadOnlyLayer(envConfig),
-	    unionfs.WithReadOnlyLayer(defaultConfig),
-	)
-
-Testing with Fixtures:
-
-	// Immutable test fixtures + test-specific modifications
-	ufs := unionfs.New(
-	    unionfs.WithWritableLayer(testOverlay),
-	    unionfs.WithReadOnlyLayer(fixtures),
-	)
-
-Container Filesystems:
-
-	// Layer base OS, dependencies, app code, and runtime changes
-	ufs := unionfs.New(
-	    unionfs.WithWritableLayer(runtime),
-	    unionfs.WithReadOnlyLayer(appCode),
-	    unionfs.WithReadOnlyLayer(dependencies),
-	    unionfs.WithReadOnlyLayer(baseOS),
-	)
-
-# Performance Considerations
-
-  - File lookups traverse layers from top to bottom, so fewer layers = better performance
-  - Copy-on-write operations involve copying the entire file, which can be expensive for large files
-  - Directory merging may be slower for directories with many files across multiple layers
-  - Consider using stat caching for frequently accessed files (see WithStatCache option)
-
-# Thread Safety
-
-UnionFS uses read-write locks to ensure thread-safe access to the layer stack. Multiple
-goroutines can safely read from the filesystem concurrently, while write operations are
-properly synchronized.
-
-# absfs Ecosystem Integration
-
-UnionFS is part of the absfs ecosystem and implements both afero.Fs and absfs.Filer interfaces,
-enabling seamless composition with other absfs packages.
-
-Get an absfs.FileSystem view:
-
-	ufs := unionfs.New(
-	    unionfs.WithWritableLayer(overlay),
-	    unionfs.WithReadOnlyLayer(base),
-	)
-
-	// Get absfs.FileSystem with working directory support
-	fs := ufs.FileSystem()
-	fs.Chdir("/app")
-	file, err := fs.Open("config.yml") // Relative to /app
-
-Compose with other absfs packages:
-
-	// UnionFS provides: multi-layer composition + copy-on-write
-	union := unionfs.New(...).FileSystem()
-
-	// Wrap with other absfs packages for additional functionality:
-	// - cachefs:   Add caching layer (performance)
-	// - rofs:      Make read-only (safety)
-	// - metricsfs: Add Prometheus metrics (observability)
-	// - retryfs:   Add retry logic (reliability)
-	// - permfs:    Add access control (security)
-
-This demonstrates the absfs philosophy: each package has a single responsibility,
-and complex behaviors emerge from simple composition.
-
-# Compatibility
-
-UnionFS implements both:
-  - afero.Fs interface - for compatibility with afero-based code
-  - absfs.Filer interface - for integration with the absfs ecosystem
-
-Use ExtendFiler or FileSystem() to get the full absfs.FileSystem interface with
-convenience methods and working directory support.
-
-# Limitations
-
-  - Only one writable layer is supported (topmost layer)
-  - Hard links are not supported across layers
-  - Symlink resolution is currently basic (advanced cross-layer symlinks not yet implemented)
-  - File locking behavior across layers is filesystem-dependent
+  - Copy-up keeps mode and modification time, not ownership; a lower file
+    owned by another user is owned by the union's user once copied up.
+  - Copy-up runs with the union's own permissions: a lower directory
+    without write permission for its owner is copied up with that mode, and
+    creating files inside it then fails on a host filesystem, as it would
+    without the union.
+  - Special files (devices, pipes, sockets) cannot be copied up; changing
+    one fails with ENOTSUP.
+  - Hard links are not tracked across layers: copying up one name of a
+    hard-linked lower file breaks the link.
+  - Renaming a large lower directory copies its whole tree.
+  - Operations are not atomic against layer failures: a change that fails
+    part way (a full disk, say) can leave its copy-up behind, though not a
+    half-written file.
 */
 package unionfs

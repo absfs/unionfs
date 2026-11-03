@@ -16,14 +16,34 @@ This guide provides best practices and configuration options for optimizing Unio
 
 ### Lookup Performance
 
-File lookups traverse layers from top to bottom:
-- **Without caching**: ~900-1000 ns per Stat operation
-- **With caching**: ~100-130 ns per Stat operation (**~9x faster**)
+A path is resolved one element at a time, as a kernel overlay does. For
+each element the union asks only the layers that still contribute to the
+directory it is in:
 
-Layer depth impact (bottom layer lookup):
-- 2 layers: ~1,600 ns
-- 5 layers: ~4,000 ns
-- 10 layers: ~10,300 ns
+- every contributing layer gets one `Lstat` of the name;
+- a layer that has the name as a directory, and is not the last one,
+  also gets one probe for the opaque marker inside it;
+- a layer that lacks the name, and is not the last one, gets one probe for
+  its whiteout.
+
+Once the walk reaches a directory that only one layer has, every further
+element costs a single `Lstat` in that layer. In the common workspace shape
+(a writable upper over one big lower), a lookup deep in a tree the upper
+has never touched costs about one call per element, plus three for the
+first element that is missing from the upper.
+
+Measured on memfs layers (Apple M-series, `go test -bench . -benchtime
+2000x`); host-directory layers add a system call per probe:
+
+| Benchmark                  | ns/op  |
+| -------------------------- | ------ |
+| Stat, lower file, no cache | ~450   |
+| Stat, cached               | ~55    |
+| Missing path, no cache     | ~510   |
+| Missing path, cached       | ~75    |
+| Lookup through 2 layers    | ~650   |
+| Lookup through 5 layers    | ~1,200 |
+| Lookup through 10 layers   | ~2,400 |
 
 **Recommendation**: Keep layer count under 10 for optimal performance.
 
@@ -66,12 +86,12 @@ ufs := unionfs.New(
 
 ### Cache TTL Guidelines
 
-| Workload Type | Stat TTL | Negative TTL | Rationale |
-|--------------|----------|--------------|-----------|
-| Read-heavy, static files | 15-60 min | 5-10 min | Files rarely change |
-| Mixed read/write | 5-10 min | 1-2 min | Balance freshness and performance |
-| Write-heavy | 1-2 min | 30 sec | Need fresh data |
-| Development | 30 sec | 10 sec | Files change frequently |
+| Workload Type            | Stat TTL  | Negative TTL | Rationale                         |
+| ------------------------ | --------- | ------------ | --------------------------------- |
+| Read-heavy, static files | 15-60 min | 5-10 min     | Files rarely change               |
+| Mixed read/write         | 5-10 min  | 1-2 min      | Balance freshness and performance |
+| Write-heavy              | 1-2 min   | 30 sec       | Need fresh data                   |
+| Development              | 30 sec    | 10 sec       | Files change frequently           |
 
 ### Cache Invalidation
 
@@ -107,12 +127,8 @@ fmt.Printf("Cache size: %d entries\n", stats.StatCacheSize)
 
 ### Layer Count
 
-Performance degrades linearly with layer depth:
-```
-2 layers:  baseline
-5 layers:  2.5x slower
-10 layers: 6.3x slower
-```
+Lookups grow with the number of layers that contribute to each directory
+on the path, about linearly (see the table above).
 
 **Recommendations**:
 1. Merge infrequently changing layers when possible
@@ -150,18 +166,23 @@ ufs := unionfs.New(
 
 ### CoW Performance Impact
 
-Benchmark results:
-- Simple read: ~1,800 ns
-- Simple write: ~3,700 ns
-- Copy-on-write: ~26,000 ns (**~7x slower than write**)
+A file is copied up the first time it is opened for writing, truncated,
+or has its mode, owner or times changed: its contents (unless the open
+truncates it, or Truncate cuts it to zero), mode and modification time.
+Its directory, and the directories above it, are copied up first, as empty
+directories with their modes and times. Renaming a directory that lower
+layers contribute to copies its whole merged tree up, so it costs time
+proportional to the tree.
 
 ### Minimizing CoW Overhead
 
 1. **Pre-populate writable layer** for files you know will be modified:
    ```go
    // Instead of relying on CoW, explicitly copy upfront
-   data, _ := afero.ReadFile(baseLayer, "/config.txt")
-   afero.WriteFile(overlay, "/config.txt", data, 0644)
+   data, _ := baseLayer.ReadFile("/config.txt")
+   f, _ := overlay.Create("/config.txt")
+   f.Write(data)
+   f.Close()
    ```
 
 2. **Adjust copy buffer size** for large files:
@@ -176,15 +197,11 @@ Benchmark results:
    - For files >10MB: 128KB - 256KB
    - For files >100MB: 512KB - 1MB
 
-3. **Batch metadata operations**:
+3. **Metadata changes copy up once**:
    ```go
-   // Bad: Multiple CoW operations
+   // The first change copies the file up; later ones only touch the
+   // writable layer's copy, so the cost is paid once either way.
    ufs.Chmod("/file", 0600)
-   ufs.Chtimes("/file", atime, mtime)
-
-   // Better: Single CoW, then modify
-   data, _ := afero.ReadFile(ufs, "/file")
-   afero.WriteFile(ufs, "/file", data, 0600)
    ufs.Chtimes("/file", atime, mtime)
    ```
 
@@ -192,7 +209,7 @@ Benchmark results:
 
 ### Directory Merging Performance
 
-Benchmark: 150 files across 3 layers = ~130,000 ns (~200 μs)
+Benchmark: 150 files across 3 layers = ~28,000 ns on memfs
 
 This scales roughly as: `O(files × layers)`
 
@@ -200,13 +217,13 @@ This scales roughly as: `O(files × layers)`
 
 1. **Cache directory reads** at application level:
    ```go
-   var dirCache map[string][]os.FileInfo
+   var dirCache map[string][]fs.DirEntry
 
-   func getCachedDir(path string) []os.FileInfo {
+   func getCachedDir(path string) []fs.DirEntry {
        if entries, ok := dirCache[path]; ok {
            return entries
        }
-       entries, _ := afero.ReadDir(ufs, path)
+       entries, _ := ufs.ReadDir(path)
        dirCache[path] = entries
        return entries
    }
@@ -218,15 +235,19 @@ This scales roughly as: `O(files × layers)`
 
 3. **Use opaque directories** for complete overrides:
    ```go
-   // Create opaque marker to hide all lower layers
-   overlay.Create("/data/.wh.__dir_opaque")
+   // Remove the directory and make it again: the new one is opaque, so
+   // the union never reads the lower layers' copies of it.
+   ufs.RemoveAll("/data")
+   ufs.Mkdir("/data", 0755)
    ```
 
 ### Whiteout Performance
 
-Whiteout lookup: ~730 ns (faster than normal stat)
+Whiteout lookup: ~470 ns on memfs (a lookup that stops at the whiteout).
 
 Whiteouts are efficient - don't hesitate to use `Remove()`/`RemoveAll()`.
+`RemoveAll` of a tree a lower layer has writes a single whiteout, whatever
+the tree's size.
 
 ## Benchmarking
 
@@ -320,7 +341,7 @@ ufs := unionfs.New(
 ```go
 // Create fresh overlay for each test
 func TestWithFixtures(t *testing.T) {
-    overlay := afero.NewMemMapFs()
+    overlay, _ := memfs.NewFS()
     ufs := unionfs.New(
         WithWritableLayer(overlay),
         WithReadOnlyLayer(fixtures),
@@ -401,7 +422,7 @@ ufs := unionfs.New(
 ### ❌ Anti-Pattern 3: Frequent CoW of Large Files
 
 ```go
-// BAD: Triggers 100MB CoW every time
+// BAD: copies the whole 100MB file up just to change its mode
 ufs.Chmod("/huge-database.db", 0600)
 ```
 
@@ -412,7 +433,9 @@ ufs.Chmod("/huge-database.db", 0600)
 ```go
 // BAD: 10,000 files in one directory
 for i := 0; i < 10000; i++ {
-    afero.WriteFile(ufs, fmt.Sprintf("/data/file%d", i), data, 0644)
+    f, _ := ufs.Create(fmt.Sprintf("/data/file%d", i))
+    f.Write(data)
+    f.Close()
 }
 ```
 
