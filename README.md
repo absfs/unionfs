@@ -307,12 +307,12 @@ go test -coverprofile=cover.out . && go tool cover -func=cover.out | tail -1
 
 Statement coverage is about 97% for both the package and the module,
 including the composition example, which a smoke test runs. The tests run
-the [fstesting](https://github.com/absfs/fstesting) suite over memfs layers and over host directories (basefs over osfs), replay a
-developer's session in a workspace and check the upper on disk marker by
-marker, check permission handling against a host (read-only lower
-directories, renames the host refuses), inject layer failures at each step
-of every multi-step change, and run concurrent changes under the race
-detector.
+the [fstesting](https://github.com/absfs/fstesting) suite over memfs
+layers and over host directories (basefs over osfs), replay a developer's
+session in a workspace and check the upper on disk marker by marker, check
+permission handling against a host (read-only lower directories, renames
+the host refuses), inject layer failures at each step of every multi-step
+change, and run concurrent changes under the race detector.
 
 ## Related
 
