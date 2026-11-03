@@ -7,6 +7,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/absfs/absfs"
@@ -188,15 +189,43 @@ func (ufs *UnionFS) Remove(name string) error {
 		return err
 	}
 
+	// A directory may be removed only when the merged view of it is empty;
+	// its upper copy may then still hold whiteouts, which go with it.
+	if info.IsDir() {
+		ents, err := ufs.ReadDir(name)
+		if err != nil {
+			return err
+		}
+		if len(ents) > 0 {
+			return &os.PathError{Op: "remove", Path: name, Err: syscall.ENOTEMPTY}
+		}
+	}
+
 	// If file exists in writable layer, actually delete it
 	if layerIdx == 0 {
+		if info.IsDir() {
+			if ents, err := layer.fs.ReadDir(name); err == nil {
+				for _, e := range ents {
+					if isWhiteout(e.Name()) {
+						layer.fs.Remove(path.Join(name, e.Name()))
+					}
+				}
+			}
+		}
 		if err := layer.fs.Remove(name); err != nil {
 			return err
 		}
 	}
 
-	// If file exists in a lower layer, create whiteout
-	if layerIdx > 0 || info != nil {
+	// Only a name a lower layer still has needs a whiteout to hide it
+	inLower := false
+	for i := 1; i < len(ufs.layers); i++ {
+		if _, err := ufs.layers[i].fs.Stat(name); err == nil {
+			inLower = true
+			break
+		}
+	}
+	if inLower {
 		whiteout := whiteoutPath(name)
 		if err := ufs.ensureDir(whiteout); err != nil {
 			return err
@@ -462,7 +491,9 @@ func (ufs *UnionFS) ReadDir(name string) ([]fs.DirEntry, error) {
 
 		// Try to read directory from this layer using ReadDir if available
 		var layerEntries []fs.DirEntry
-		if reader, ok := layer.fs.(interface{ ReadDir(string) ([]fs.DirEntry, error) }); ok {
+		if reader, ok := layer.fs.(interface {
+			ReadDir(string) ([]fs.DirEntry, error)
+		}); ok {
 			layerEntries, err = reader.ReadDir(name)
 			if err != nil {
 				if os.IsNotExist(err) {
