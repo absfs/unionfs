@@ -222,12 +222,12 @@ func (c *Cache) Stats() CacheStats {
 	defer c.mu.RUnlock()
 
 	return CacheStats{
-		Enabled:          true,
-		StatCacheSize:    len(c.statCache),
+		Enabled:           true,
+		StatCacheSize:     len(c.statCache),
 		NegativeCacheSize: len(c.negativeCache),
-		MaxEntries:       c.maxEntries,
-		StatTTL:          c.statTTL,
-		NegativeTTL:      c.negativeTTL,
+		MaxEntries:        c.maxEntries,
+		StatTTL:           c.statTTL,
+		NegativeTTL:       c.negativeTTL,
 	}
 }
 

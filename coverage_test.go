@@ -6,8 +6,6 @@ import (
 	"path"
 	"testing"
 	"time"
-
-	
 )
 
 // =============================================================================
@@ -49,8 +47,8 @@ func TestLayerPrecedenceWith4Layers(t *testing.T) {
 	)
 
 	tests := []struct {
-		path    string
-		want    string
+		path string
+		want string
 	}{
 		{"/bottom.txt", "layer0"},
 		{"/test1.txt", "layer1-test1"},
@@ -1402,8 +1400,8 @@ func TestOriginalPath(t *testing.T) {
 		wantOK   bool
 	}{
 		{"/dir/.wh.file.txt", "/dir/file.txt", true},
-		{"/dir/file.txt", "", false},                    // Not a whiteout
-		{"/dir/.wh.__dir_opaque", "", false},           // Opaque whiteout
+		{"/dir/file.txt", "", false},         // Not a whiteout
+		{"/dir/.wh.__dir_opaque", "", false}, // Opaque whiteout
 		{"/.wh.test", "/test", true},
 	}
 
@@ -1887,9 +1885,9 @@ func TestCacheDisabled(t *testing.T) {
 		t.Error("disabled cache should not track negatives")
 	}
 
-	cache.invalidate("/test")          // Should not panic
-	cache.invalidateTree("/test")      // Should not panic
-	cache.clear()                      // Should not panic
+	cache.invalidate("/test")     // Should not panic
+	cache.invalidateTree("/test") // Should not panic
+	cache.clear()                 // Should not panic
 
 	stats := cache.Stats()
 	if stats.Enabled {
