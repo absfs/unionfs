@@ -573,6 +573,49 @@ func TestCacheEviction(t *testing.T) {
 	}
 }
 
+// TestCacheEvictionOrder checks that eviction takes the oldest entry still
+// cached: storing a key again makes it the newest, an invalidated key is
+// passed over, and the record of stored keys stays bounded.
+func TestCacheEvictionOrder(t *testing.T) {
+	cache := newCache(true, 5*time.Minute, 2*time.Minute, 3)
+	cache.now = steppingClock()
+	put := func(name string) { cache.putStat("/"+name, &mockFileInfo{name: name}, 0) }
+	has := func(name string) bool { _, _, ok := cache.getStat("/" + name); return ok }
+	put("a")
+	put("b")
+	put("c")
+	put("a") // a is now the newest; storing it again evicts nothing
+	if n := cache.Stats().StatCacheSize; n != 3 {
+		t.Fatalf("size %d after storing a again", n)
+	}
+	put("d") // evicts b
+	if has("b") || !has("a") || !has("c") || !has("d") {
+		t.Fatal("want b evicted")
+	}
+	cache.invalidate("/c")
+	put("e") // room for it: nothing evicted
+	put("f") // evicts a, skipping c's stale record
+	if has("a") || !has("d") || !has("e") || !has("f") {
+		t.Fatal("want a evicted")
+	}
+	for i := 0; i < 1000; i++ {
+		put("f")
+		cache.putNegative("/missing")
+	}
+	if n := len(cache.statOrder.keys); n > 2*3+16 {
+		t.Fatalf("stat order holds %d records", n)
+	}
+	if n := len(cache.negativeOrder.keys); n > 2*1+16 {
+		t.Fatalf("negative order holds %d records", n)
+	}
+	cache.clear()
+	if len(cache.statOrder.keys)+len(cache.negativeOrder.keys) != 0 {
+		t.Fatal("clear kept records")
+	}
+	cache.evictOldestStat() // nothing to evict
+	cache.evictOldestNegative()
+}
+
 // TestNegativeCacheEviction checks that a full negative cache evicts its
 // oldest entry.
 func TestNegativeCacheEviction(t *testing.T) {

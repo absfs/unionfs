@@ -19,6 +19,12 @@ type Cache struct {
 	maxEntries    int
 	enabled       bool
 	now           func() time.Time // the clock; tests replace it
+
+	// statOrder and negativeOrder record the keys of each map in the
+	// order they were stored, so that a full map evicts its oldest entry
+	// without scanning the map.
+	statOrder     evictQueue
+	negativeOrder evictQueue
 }
 
 // statCacheEntry stores cached file info
@@ -26,11 +32,77 @@ type statCacheEntry struct {
 	info    os.FileInfo
 	layer   int
 	expires time.Time
+	seq     uint64 // its place in statOrder
 }
 
 // negativeCacheEntry stores information about non-existent paths
 type negativeCacheEntry struct {
 	expires time.Time
+	seq     uint64 // its place in negativeOrder
+}
+
+// evictQueue lists the keys stored in a map, oldest first. Every entry of
+// a map has the same lifetime, so the oldest stored is the first to expire.
+// A key stored again, or deleted, leaves a stale record behind: each record
+// carries the sequence number its entry was stored with, and a record whose
+// entry has another (or none) is skipped. Eviction pops records, and the
+// list is compacted once stale records outnumber the map, so storing an
+// entry costs amortized constant time however full the map is.
+type evictQueue struct {
+	keys []queued
+	seq  uint64
+}
+
+type queued struct {
+	key string
+	seq uint64
+}
+
+// push records key as stored now and returns its sequence number.
+func (q *evictQueue) push(key string) uint64 {
+	q.seq++
+	q.keys = append(q.keys, queued{key: key, seq: q.seq})
+	return q.seq
+}
+
+// pop removes and returns the oldest key whose record live accepts.
+func (q *evictQueue) pop(live func(key string, seq uint64) bool) (string, bool) {
+	for len(q.keys) > 0 {
+		k := q.keys[0]
+		q.keys = q.keys[1:]
+		if live(k.key, k.seq) {
+			return k.key, true
+		}
+	}
+	return "", false
+}
+
+// compact drops stale records once the list holds more than twice size of
+// them, size being the map's length.
+func (q *evictQueue) compact(size int, live func(key string, seq uint64) bool) {
+	if len(q.keys) <= 2*size+16 {
+		return
+	}
+	kept := make([]queued, 0, size)
+	for _, k := range q.keys {
+		if live(k.key, k.seq) {
+			kept = append(kept, k)
+		}
+	}
+	q.keys = kept
+}
+
+// reset empties the list.
+func (q *evictQueue) reset() { q.keys = nil }
+
+func (c *Cache) statLive(key string, seq uint64) bool {
+	e, ok := c.statCache[key]
+	return ok && e.seq == seq
+}
+
+func (c *Cache) negativeLive(key string, seq uint64) bool {
+	e, ok := c.negativeCache[key]
+	return ok && e.seq == seq
 }
 
 // newCache creates a new cache with the specified configuration
@@ -82,8 +154,8 @@ func (c *Cache) putStat(path string, info os.FileInfo, layer int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Evict old entries if cache is full
-	if len(c.statCache) >= c.maxEntries {
+	// Evict the oldest entry if the cache is full
+	if _, ok := c.statCache[path]; !ok && len(c.statCache) >= c.maxEntries {
 		c.evictOldestStat()
 	}
 
@@ -91,7 +163,9 @@ func (c *Cache) putStat(path string, info os.FileInfo, layer int) {
 		info:    info,
 		layer:   layer,
 		expires: c.now().Add(c.statTTL),
+		seq:     c.statOrder.push(path),
 	}
+	c.statOrder.compact(len(c.statCache), c.statLive)
 }
 
 // isNegative checks if a path is in the negative cache (known not to exist)
@@ -126,14 +200,16 @@ func (c *Cache) putNegative(path string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Evict old entries if cache is full
-	if len(c.negativeCache) >= c.maxEntries {
+	// Evict the oldest entry if the cache is full
+	if _, ok := c.negativeCache[path]; !ok && len(c.negativeCache) >= c.maxEntries {
 		c.evictOldestNegative()
 	}
 
 	c.negativeCache[path] = &negativeCacheEntry{
 		expires: c.now().Add(c.negativeTTL),
+		seq:     c.negativeOrder.push(path),
 	}
+	c.negativeOrder.compact(len(c.negativeCache), c.negativeLive)
 }
 
 // lstatKey is appended to a path to key its Lstat result, so that the
@@ -189,39 +265,21 @@ func (c *Cache) clear() {
 
 	c.statCache = make(map[string]*statCacheEntry)
 	c.negativeCache = make(map[string]*negativeCacheEntry)
+	c.statOrder.reset()
+	c.negativeOrder.reset()
 }
 
 // evictOldestStat removes the oldest stat cache entry
 func (c *Cache) evictOldestStat() {
-	var oldestPath string
-	var oldestTime time.Time
-
-	for path, entry := range c.statCache {
-		if oldestPath == "" || entry.expires.Before(oldestTime) {
-			oldestPath = path
-			oldestTime = entry.expires
-		}
-	}
-
-	if oldestPath != "" {
-		delete(c.statCache, oldestPath)
+	if k, ok := c.statOrder.pop(c.statLive); ok {
+		delete(c.statCache, k)
 	}
 }
 
 // evictOldestNegative removes the oldest negative cache entry
 func (c *Cache) evictOldestNegative() {
-	var oldestPath string
-	var oldestTime time.Time
-
-	for path, entry := range c.negativeCache {
-		if oldestPath == "" || entry.expires.Before(oldestTime) {
-			oldestPath = path
-			oldestTime = entry.expires
-		}
-	}
-
-	if oldestPath != "" {
-		delete(c.negativeCache, oldestPath)
+	if k, ok := c.negativeOrder.pop(c.negativeLive); ok {
+		delete(c.negativeCache, k)
 	}
 }
 
