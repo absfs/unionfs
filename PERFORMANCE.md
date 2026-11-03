@@ -24,7 +24,9 @@ directory it is in:
 - a layer that has the name as a directory, and is not the last one,
   also gets one probe for the opaque marker inside it;
 - a layer that lacks the name, and is not the last one, gets one probe for
-  its whiteout.
+  its whiteout;
+- a regular file found below the top contributing layer gets one probe for
+  a metadata marker in each contributing layer above it.
 
 Once the walk reaches a directory that only one layer has, every further
 element costs a single `Lstat` in that layer. In the common workspace shape
@@ -47,6 +49,39 @@ Measured on memfs layers (Apple M-series, `go test -bench . -benchtime
 
 **Recommendation**: Keep layer count under 10 for optimal performance.
 
+### Lstat, and the lookup cache
+
+`Lstat` is what an NFS server calls most (GETATTR, LOOKUP). Without a
+cache it walks the path as above: 5 layer calls for `/d001/f001.txt` and 7
+for `/.git/objects/pack/p.idx` in a lower the upper has not touched. With
+`WithLookupCache`, a repeated lookup reads only the final element's
+attributes from its layer, one call (two for a file a metadata marker
+changes); with the Stat cache, which now holds `Lstat` results too, none.
+`TestLstatLayerCalls` counts these.
+
+`BenchmarkLstat` (`go test -run XXX -bench BenchmarkLstat -benchtime
+20000x`, Apple M-series, ns/op, an empty upper over the lower):
+
+| Layers | Path                       | Lower alone | No cache, before | No cache | Lookup cache | Stat cache, before | Stat cache |
+| ------ | -------------------------- | ----------- | ---------------- | -------- | ------------ | ------------------ | ---------- |
+| memfs  | `/d001/f001.txt`           | 75          | 590              | 650      | 310          | 580                | 75         |
+| memfs  | `/.git/objects/pack/p.idx` | 90          | 935              | 1,060    | 510          | 940                | 90         |
+| osfs   | `/d001/f001.txt`           | 1,290       | 6,350            | 6,220    | 1,530        | 6,110              | 75         |
+| osfs   | `/.git/objects/pack/p.idx` | 1,350       | 9,290            | 9,310    | 1,810        | 9,190              | 88         |
+
+"Before" is the same benchmark on the code before the lookup cache and the
+`Lstat` entries in the Stat cache (the Stat cache did not cover `Lstat`
+then). osfs is basefs over host directories.
+
+The lookup cache caches structure, not attributes: which layer holds each
+name, which markers apply, which names are missing. It stays exact under
+writes through open handles, which the Stat cache does not, so it suits an
+NFS server. Changes made through the union drop what they affect; changes
+made to a layer directly show once the entries expire, or after
+`InvalidateCache`, `InvalidateCacheTree` or `ClearCache` (pass the topmost
+path the direct change created or removed: a directory added to the upper
+also changes where every name under it is found).
+
 ### Cache Performance
 
 Negative lookups (non-existent files), from the table above:
@@ -57,7 +92,22 @@ Negative lookups (non-existent files), from the table above:
 
 ## Caching
 
-### Enabling the Cache
+There are two caches. The lookup cache (`WithLookupCache`) caches path
+resolution and never serves attributes; the Stat cache (`WithStatCache`,
+`WithCacheConfig`) serves whole `Stat` and `Lstat` results, so it is
+faster but can serve a stale size after writes through an open handle.
+
+### Enabling the Lookup Cache
+
+```go
+ufs := unionfs.New(
+    unionfs.WithWritableLayer(overlay),
+    unionfs.WithReadOnlyLayer(baseLayer),
+    unionfs.WithLookupCache(time.Hour, 0), // TTL, max names (0: 100000)
+)
+```
+
+### Enabling the Stat Cache
 
 ```go
 ufs := unionfs.New(
@@ -171,9 +221,10 @@ ufs := unionfs.New(
 
 ### CoW Performance Impact
 
-A file is copied up the first time it is opened for writing, truncated,
-or has its mode, owner or times changed: its contents (unless the open
-truncates it, or Truncate cuts it to zero), mode and modification time.
+A file is copied up the first time it is opened for writing, truncated or
+renamed: its contents (unless the open truncates it, or Truncate cuts it
+to zero), mode and modification time. Changing its mode, owner or times
+copies nothing: it writes a metadata marker.
 Its directory, and the directories above it, are copied up first, as empty
 directories with their modes and times. Each entry copied into a
 directory costs one `Lstat` and one `Chtimes` of that directory (two
@@ -205,10 +256,10 @@ costs time proportional to the tree.
    - For files >10MB: 128KB - 256KB
    - For files >100MB: 512KB - 1MB
 
-3. **Metadata changes copy up once**:
+3. **Metadata changes copy no data**:
    ```go
-   // The first change copies the file up; later ones only touch the
-   // writable layer's copy, so the cost is paid once either way.
+   // Both write one empty .wh..wh.meta.file marker in the writable
+   // layer; the data stays in the lower until the file is written.
    ufs.Chmod("/file", 0600)
    ufs.Chtimes("/file", atime, mtime)
    ```
@@ -304,8 +355,11 @@ go func() {
 
 ### General Guidelines
 
-1. **Always enable caching** in production
+1. **Enable a cache** in production: the lookup cache when files are
+   written through long-lived handles (an NFS server), the Stat cache too
+   when they are not
    ```go
+   WithLookupCache(time.Hour, 0)
    WithStatCache(true, 5*time.Minute)
    ```
 

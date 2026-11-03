@@ -144,7 +144,11 @@ More, compiled and checked by `go test`, in
   self-contained copy and one whiteout.
 - **Changeset helpers:** `IsWhiteout`, `IsOpaqueMarker`, `IsMetaMarker`,
   `WhiteoutTarget`, `WhiteoutName`, `MetaTarget`, `MetaMarkerName`.
-- **Optional Stat cache,** with negative entries, TTLs and invalidation.
+- **Optional caches.** A lookup cache (`WithLookupCache`) remembers which
+  layer holds each name, so a repeated `Lstat` or `Stat` costs one layer
+  call instead of several per path element, and never serves stale
+  attributes. A Stat cache serves whole `Stat` and `Lstat` results, with
+  negative entries, TTLs and invalidation.
 - **Safe for concurrent use,** tested under the race detector.
 
 ## The upper layer as a changeset
@@ -332,15 +336,24 @@ change fails with `ErrNoWritableLayer`.
   name fail with `ENOENT`, `RemoveAll("")` does nothing, and a name ending
   in `.` or `..` fails with `EINVAL` in all three. Link targets are not
   cleaned (see Features).
-- **The Stat cache** is dropped for paths changed through the union, by
-  the path the caller gave and the path it resolved to. It is not dropped
-  for changes made to a layer directly, for writes through an open handle
-  (`OpenFile` drops the entry when it opens the file, so a `Stat` taken
-  between the open and a `Write` keeps the old size), or for changes seen
-  through another symbolic link, until the entry expires. Call
-  `InvalidateCache` after such a change, or leave the cache off (the
-  default) when files are written through long-lived handles, as an NFS
-  server does.
+- **The lookup cache** (`WithLookupCache`) holds which layer has each name
+  and which markers apply, never attributes, so it stays exact under
+  writes through open handles. Changes through the union drop what they
+  affect. Changes made to a layer directly show only once the entries
+  expire, or after `InvalidateCache`, `InvalidateCacheTree` or
+  `ClearCache` of the topmost path the change created or removed: until
+  then a name added to a layer may stay missing, or stay hidden by a layer
+  above. A name removed from its layer is noticed at once.
+- **The Stat cache** holds `Stat` and `Lstat` results. It is dropped for
+  paths changed through the union, by the path the caller gave and the
+  path it resolved to. It is not dropped for changes made to a layer
+  directly, for writes through an open handle (`OpenFile` drops the entry
+  when it opens the file, so a `Stat` taken between the open and a
+  `Write` keeps the old size), or for changes seen through another
+  symbolic link, until the entry expires. Call `InvalidateCache` after
+  such a change, or leave the Stat cache off (the default) when files are
+  written through long-lived handles, as an NFS server does, and use the
+  lookup cache instead.
 - **Locking:** changes take an exclusive lock for their metadata work
   (including a copy-up), lookups share a read lock; file I/O through open
   handles takes none.
@@ -355,6 +368,7 @@ ufs := unionfs.New(
     unionfs.WithWritableLayer(upper),
     unionfs.WithReadOnlyLayer(site),     // searched first
     unionfs.WithReadOnlyLayer(defaults), // then this
+    unionfs.WithLookupCache(time.Hour, 0),
     unionfs.WithStatCache(true, 5*time.Second),
     unionfs.WithCopyBufferSize(256*1024),
 )
@@ -364,7 +378,8 @@ ufs := unionfs.New(
 | --------------------------------------------------- | ----------------------------------------------------------------- |
 | `WithWritableLayer(fs)`                             | the layer every change goes to; without it the union is read-only |
 | `WithReadOnlyLayer(fs)`                             | adds a layer below those added so far                             |
-| `WithStatCache(enabled, ttl)`                       | caches `Stat`; misses for `ttl/2`                                 |
+| `WithLookupCache(ttl, maxEntries)`                  | caches path resolution, not attributes; off unless `ttl > 0`      |
+| `WithStatCache(enabled, ttl)`                       | caches `Stat` and `Lstat`; misses for `ttl/2`                     |
 | `WithCacheConfig(enabled, ttl, negTTL, maxEntries)` | the same, with every knob                                         |
 | `WithCopyBufferSize(n)`                             | copy-up buffer, 32 KiB by default                                 |
 

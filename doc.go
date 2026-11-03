@@ -137,13 +137,26 @@ union that keep their own working directory.
 
 # Caching
 
-WithStatCache and WithCacheConfig enable a cache of Stat results. Changes
-made through the union drop the entries at and under the paths they touch,
-both as the caller named them and as they resolved. Changes made to a layer
-directly, writes through a file handle the union returned (OpenFile drops
-the entry only when the file is opened), and changes seen through another
-symbolic link to the changed path, show once the entry expires, or after
-InvalidateCache, InvalidateCacheTree or ClearCache.
+Two caches are off unless an option enables them.
+
+WithLookupCache caches path resolution: which layer holds each name, the
+whiteouts, opaque markers and metadata markers that apply to it, and which
+names are missing. A lookup served from it reads only the final element's
+attributes from its layer, so attributes are never stale, even under
+writes through open handles. Every change made through the union drops the
+entries it affects. Changes made to a layer directly show once the
+entries expire, or after InvalidateCache or InvalidateCacheTree of the
+topmost path the change created or removed, or ClearCache; a name removed
+from its layer is noticed at once.
+
+WithStatCache and WithCacheConfig enable a cache of Stat and Lstat
+results. Changes made through the union drop the entries at and under the
+paths they touch, both as the caller named them and as they resolved.
+Changes made to a layer directly, writes through a file handle the union
+returned (OpenFile drops the entry only when the file is opened), and
+changes seen through another symbolic link to the changed path, show once
+the entry expires, or after InvalidateCache, InvalidateCacheTree or
+ClearCache.
 
 # Concurrency
 

@@ -109,6 +109,16 @@ match POSIX, and callers relying on the old ones should read
   `IsMetaMarker`, `MetaTarget` and `MetaMarkerName` name the markers; a
   changeset reader that skips `.wh..wh.` names, as before, sees no change
   for such a file.
+- `WithLookupCache(ttl, maxEntries)` caches path resolution (which layer
+  holds each name, which markers apply, which names are missing) but not
+  attributes, so it stays exact under writes through open handles. A
+  repeated `Lstat` costs one layer call instead of one or more per path
+  element: through host directories, 1.5 to 1.8 µs instead of 6.3 to
+  9.3 µs. Every change through the union drops the entries it affects;
+  `CacheStats` reports its size. See PERFORMANCE.md.
+- The Stat cache (`WithStatCache`, `WithCacheConfig`) holds `Lstat`
+  results and misses too; before, it covered only `Stat`.
+- `BenchmarkLstat`, and a test that counts the layer calls of an `Lstat`.
 - The README documents the whiteout format exactly and how to read a
   writable layer as a changeset.
 - Tests over host directories (basefs over osfs), fault injection, a
