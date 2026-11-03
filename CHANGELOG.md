@@ -92,6 +92,21 @@ match POSIX, and callers relying on the old ones should read
   the zero `Time` on, and a memfs writable layer stored it, giving the
   file a modification time in 1754. A zero `mtime` now leaves the
   modification time as it is, as `os.Chtimes` does.
+- The union's bookkeeping could act through a symbolic link in the
+  writable layer, which a host follows: writing a whiteout or opaque
+  marker opened an existing entry at its path with `O_TRUNC`, and a link
+  at a metadata marker's path was taken for the marker, so `Chmod`,
+  `Chown` and `Chtimes` changed the link's target. On a host that folds
+  case (macOS, Windows), a client could make such a link through the
+  union itself as `.WH.<name>`, and with the relative-link escape basefs
+  documents, truncate or chmod a file outside the layer. A marker's path
+  that already holds an entry now counts as the marker and is left
+  unopened; markers and copy-ups are created with `O_EXCL`; only a regular
+  file is a metadata marker (otherwise the change fails with `EEXIST`); a
+  directory the union expected in the writable layer that is something
+  else fails with `ENOTDIR`; and `Lchown` of a link fails with
+  `errors.ErrUnsupported` instead of falling back to `Chown` when the
+  writable layer has no `Lchown`.
 
 ### Added
 

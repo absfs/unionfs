@@ -107,15 +107,23 @@ func (ufs *UnionFS) findMeta(dir *node, k int, n *node) error {
 			continue
 		}
 		info, err := ufs.layerLstat(li, m)
-		if err == nil {
+		if err == nil && isMetaInfo(info) {
 			n.attachMeta(info, li)
 			return nil
 		}
-		if !isAbsent(err) {
+		if err != nil && !isAbsent(err) {
 			return err
 		}
 	}
 	return nil
+}
+
+// isMetaInfo reports whether info, of an entry at a metadata marker's path,
+// is a marker: the union creates them as regular files. Anything else there,
+// a symbolic link above all, is not one, and the union never changes its
+// attributes, which a host would do to the link's target.
+func isMetaInfo(info os.FileInfo) bool {
+	return info.Mode().IsRegular()
 }
 
 // attachMeta records that the marker with info, in layer li, changes n.
@@ -174,7 +182,9 @@ func (ufs *UnionFS) setMeta(n *node, set func(marker string) error) error {
 // bits and its modification time.
 func (ufs *UnionFS) createMeta(m string, info os.FileInfo) error {
 	up := ufs.upper()
-	f, err := up.OpenFile(m, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	// Exclusive: whatever is at m is not a marker (see isMetaInfo), and
+	// must neither be followed, if it is a link, nor taken over.
+	f, err := up.OpenFile(m, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}

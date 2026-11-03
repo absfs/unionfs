@@ -211,5 +211,14 @@ reading the lower copy after another handle copies it up.
     is not cleaned: it is walked element by element, so a ".." after a
     linked directory leaves the directory that link resolves to, as on a
     host.
+  - The union's own bookkeeping never acts through a symbolic link in the
+    writable layer, where a host would follow it: an entry already at a
+    whiteout's or opaque marker's path counts as that marker and is not
+    opened, a link at a metadata marker's path is not a marker (the change
+    fails with EEXIST), copy-up creates its file exclusively, and a
+    directory the union expected that is now something else fails with
+    ENOTDIR. Lchown of a link fails with errors.ErrUnsupported when the
+    writable layer has no Lchown. On a host that folds case, ".WH.x" is a
+    name the union lets a client create and the host takes for ".wh.x".
 */
 package unionfs

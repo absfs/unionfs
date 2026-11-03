@@ -113,7 +113,12 @@ func (ufs *UnionFS) ensureUpperDir(n *node) error {
 	if err := reservedErr(n); err != nil {
 		return err
 	}
-	if ufs.layerHas(0, n.path) {
+	if info, err := ufs.layerLstat(0, n.path); err == nil {
+		// Only a directory joins n; the union would write through
+		// anything else, a symbolic link above all, as if it were one.
+		if !info.IsDir() {
+			return &os.PathError{Op: "copyup", Path: n.path, Err: syscall.ENOTDIR}
+		}
 		n.layers = append([]int{0}, n.layers...)
 		return nil
 	}
@@ -150,6 +155,11 @@ func (ufs *UnionFS) keepDir(dir string, fn func() error) error {
 	info, err := ufs.layerLstat(0, dir)
 	if err != nil {
 		return err
+	}
+	if !info.IsDir() {
+		// Never change the mode or times of whatever a link there
+		// points at.
+		return &os.PathError{Op: "keepdir", Path: dir, Err: syscall.ENOTDIR}
 	}
 	// Copy the values out now: some layers (memfs) return a FileInfo that
 	// tracks later changes.
@@ -237,7 +247,9 @@ func (ufs *UnionFS) copyUpFile(n *node, withData bool) error {
 func (ufs *UnionFS) copyUpRegular(n *node, withData bool) error {
 	up := ufs.upper()
 	mode := n.info.Mode()
-	dst, err := up.OpenFile(n.path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	// Exclusive: the writable layer has nothing at n.path, or n would be
+	// its, and a link there must not be followed.
+	dst, err := up.OpenFile(n.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return fmt.Errorf("unionfs: copy up %s: %w", n.path, err)
 	}
@@ -432,9 +444,18 @@ func (ufs *UnionFS) moveUpper(from, to string) (string, error) {
 }
 
 // writeMarker creates the empty marker file p (a whiteout or an opaque
-// marker) in the writable layer.
+// marker) in the writable layer. An entry already at p counts as the marker
+// and is left as it is: in particular a symbolic link there is never opened,
+// which a host would follow. Such an entry can be a client's own on a host
+// that folds case, where ".WH.x" and ".wh.x" are one name. The marker is
+// created exclusively, so that a link that appears at p in the meantime
+// makes the creation fail rather than reach the link's target.
 func (ufs *UnionFS) writeMarker(p string) error {
-	f, err := ufs.upper().OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+	found, err := ufs.layerProbe(0, p)
+	if err != nil || found {
+		return err
+	}
+	f, err := ufs.upper().OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
 	if err != nil {
 		return err
 	}

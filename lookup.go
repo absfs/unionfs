@@ -197,7 +197,7 @@ func (ufs *UnionFS) finish(cur *node, fresh bool) (*node, error) {
 			return &out, nil
 		}
 		var meta os.FileInfo
-		if meta, err = ufs.layerLstat(cur.metaLayer, MetaMarkerName(cur.path)); err == nil {
+		if meta, err = ufs.layerLstat(cur.metaLayer, MetaMarkerName(cur.path)); err == nil && isMetaInfo(meta) {
 			out.attachMeta(meta, cur.metaLayer)
 			return &out, nil
 		}
@@ -491,7 +491,7 @@ func (ufs *UnionFS) listDir(dir *node) ([]fs.DirEntry, error) {
 			if IsWhiteout(name) && ufs.honours(li) {
 				if t, ok := WhiteoutTarget(name); ok {
 					hidden = append(hidden, t)
-				} else if IsMetaMarker(name) {
+				} else if IsMetaMarker(name) && e.Type().IsRegular() {
 					marked = append(marked, e)
 				}
 				continue

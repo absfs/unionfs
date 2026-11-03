@@ -346,6 +346,19 @@ change fails with `ErrNoWritableLayer`.
   write permission on the copied-up directory just while it copies an
   entry up. Creating, removing or renaming an entry directly inside it
   fails with EACCES on a host filesystem, as it would on the host.
+- **The union's bookkeeping never follows a link in the writable layer.**
+  A host follows a symbolic link on open, chmod, chown and chtimes, so a
+  link where the union writes a marker would carry the write to the
+  link's target. An entry already at a whiteout's or opaque marker's path
+  counts as that marker and is not opened; a link at a metadata marker's
+  path is not a marker, and changing the file's metadata fails with
+  `EEXIST`; copy-up creates its file exclusively; and a directory the
+  union expected in the writable layer that is now something else fails
+  with `ENOTDIR`. `Lchown` of a link fails with `errors.ErrUnsupported`
+  when the writable layer has no `Lchown`, rather than following it.
+- **Hosts that fold case** (macOS and Windows by default) take `.WH.x`,
+  which the union lets a client create, for the marker `.wh.x`: such an
+  entry hides `x`, or blocks metadata changes to it, as above.
 - **A lower's own `.wh.` names vanish** by default, taken for markers.
   Check a lower with `ReservedNames`, or use
   `WithMarkersOnlyInWritableLayer` (see the changeset section).

@@ -795,13 +795,20 @@ func (ufs *UnionFS) Chtimes(name string, atime, mtime time.Time) error {
 
 // Lchown changes the owner of name without following a symbolic link at
 // name, as Chown does otherwise; a link only lower layers have is copied up
-// as a link. A writable layer without Lchown gets Chown.
+// as a link. A writable layer without Lchown gets Chown, except for a
+// symbolic link, which Chown would follow inside the layer rather than
+// through the union: Lchown of a link then fails with
+// errors.ErrUnsupported.
 func (ufs *UnionFS) Lchown(name string, uid, gid int) error {
 	ufs.mu.Lock()
 	defer ufs.mu.Unlock()
-	return ufs.changeAttrs("lchown", name, false, nil, func(p string, _ *node) error {
-		if l, ok := ufs.layers[0].fs.(lchowner); ok {
+	l, hasLchown := ufs.layers[0].fs.(lchowner)
+	return ufs.changeAttrs("lchown", name, false, nil, func(p string, n *node) error {
+		if hasLchown {
 			return l.Lchown(p, uid, gid)
+		}
+		if isSymlink(n.info) {
+			return &os.PathError{Op: "lchown", Path: name, Err: errors.ErrUnsupported}
 		}
 		return ufs.upper().Chown(p, uid, gid)
 	})
