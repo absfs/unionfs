@@ -5,33 +5,21 @@ import (
 	"io/fs"
 	"os"
 	"path"
-	"sort"
-	"strings"
-
-	"github.com/absfs/absfs"
 )
 
-// unionDir implements absfs.File for directories, merging contents across layers
+// unionDir is an open directory of the merged view. Its listing is read
+// from the layers on the first Readdir, ReadDir, Readdirnames or
+// Seek(0, io.SeekEnd) and kept for the life of the handle.
 type unionDir struct {
-	ufs        *UnionFS
-	path       string
-	entries    []os.FileInfo
-	offset     int
-	baseLayer  absfs.FileSystem
-	layerIdx   int
-	closed     bool
+	ufs     *UnionFS
+	path    string
+	entries []os.FileInfo
+	offset  int
+	closed  bool
 }
 
-// newUnionDir creates a new union directory
-func newUnionDir(ufs *UnionFS, path string, baseLayer absfs.FileSystem, layerIdx int) (*unionDir, error) {
-	return &unionDir{
-		ufs:       ufs,
-		path:      path,
-		baseLayer: baseLayer,
-		layerIdx:  layerIdx,
-		offset:    0,
-		closed:    false,
-	}, nil
+func newUnionDir(ufs *UnionFS, path string) *unionDir {
+	return &unionDir{ufs: ufs, path: path}
 }
 
 // Close closes the directory
@@ -216,92 +204,26 @@ func (d *unionDir) ReadDir(n int) ([]fs.DirEntry, error) {
 	return result, nil
 }
 
-// loadEntries loads and merges directory entries from all layers
+// loadEntries reads the merged listing.
 func (d *unionDir) loadEntries() error {
-	seen := make(map[string]bool)
-	whiteouts := make(map[string]bool)
-	var entries []os.FileInfo
-
 	d.ufs.mu.RLock()
 	defer d.ufs.mu.RUnlock()
-
-	// Check for opaque directory whiteout in upper layers
-	isOpaque := false
-	for i := 0; i < len(d.ufs.layers); i++ {
-		layer := d.ufs.layers[i]
-		opaquePath := path.Join(d.path, OpaqueWhiteout)
-		if _, err := layer.fs.Stat(opaquePath); err == nil {
-			isOpaque = true
-			break
-		}
+	n, err := d.ufs.resolve(d.path, true)
+	if err != nil {
+		return err
 	}
-
-	// Iterate through all layers
-	for i := 0; i < len(d.ufs.layers); i++ {
-		// If we found an opaque whiteout, stop processing lower layers
-		if isOpaque && i > 0 {
-			break
-		}
-
-		layer := d.ufs.layers[i]
-
-		// Try to read directory from this layer
-		dir, err := layer.fs.Open(d.path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			// Skip layers with errors
-			continue
-		}
-
-		// Read all entries from this layer
-		layerEntries, err := dir.Readdir(-1)
-		dir.Close()
-
-		if err != nil {
-			continue
-		}
-
-		// Process entries from this layer
-		for _, entry := range layerEntries {
-			name := entry.Name()
-
-			// Check if this is a whiteout file
-			if isWhiteout(name) {
-				// Mark the original file as whited out
-				if original, ok := originalPath(path.Join(d.path, name)); ok {
-					whiteouts[path.Base(original)] = true
-				}
-				continue
-			}
-
-			// Skip opaque whiteout markers
-			if isOpaqueWhiteout(name) {
-				continue
-			}
-
-			// Skip if already seen in upper layer
-			if seen[name] {
-				continue
-			}
-
-			// Skip if whited out
-			if whiteouts[name] {
-				continue
-			}
-
-			// Add entry
-			seen[name] = true
-			entries = append(entries, entry)
-		}
+	ents, err := d.ufs.listDir(n)
+	if err != nil {
+		return err
 	}
-
-	// Sort entries by name
-	sort.Slice(entries, func(i, j int) bool {
-		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
-	})
-
+	entries := make([]os.FileInfo, 0, len(ents))
+	for _, e := range ents {
+		info, err := e.Info()
+		if err != nil {
+			continue // removed since the listing was read
+		}
+		entries = append(entries, info)
+	}
 	d.entries = entries
 	return nil
 }

@@ -1,10 +1,7 @@
-// Package unionfs provides a layered filesystem implementation with Docker-style
-// overlay capabilities and copy-on-write support.
 package unionfs
 
 import (
 	"errors"
-	"os"
 	"path"
 	"strings"
 	"sync"
@@ -14,38 +11,67 @@ import (
 )
 
 const (
-	// WhiteoutPrefix is the prefix for whiteout files (AUFS/Docker style)
+	// WhiteoutPrefix starts the name of a whiteout marker. An empty file
+	// named WhiteoutPrefix+name in a directory of the writable layer
+	// deletes name from that directory in every layer below it.
 	WhiteoutPrefix = ".wh."
-	// OpaqueWhiteout marks a directory as opaque (hides all lower layer contents)
+
+	// OpaqueWhiteout is the name of the opaque marker. An empty file of this
+	// name inside a directory of the writable layer makes the directory
+	// opaque: none of the entries the same directory has in the layers
+	// below show through it.
 	OpaqueWhiteout = ".wh.__dir_opaque"
 )
 
+// defaultCopyBufferSize is the copy-up buffer size used unless
+// WithCopyBufferSize sets another.
+const defaultCopyBufferSize = 32 * 1024
+
 var (
-	// ErrNoWritableLayer is returned when a write operation is attempted but no writable layer exists
+	// ErrNoWritableLayer is returned by every operation that changes the
+	// union when it was built without WithWritableLayer.
 	ErrNoWritableLayer = errors.New("no writable layer configured")
-	// ErrReadOnlyLayer is returned when attempting to write to a read-only layer
+
+	// ErrReadOnlyLayer is returned when attempting to write to a read-only
+	// layer.
 	ErrReadOnlyLayer = errors.New("layer is read-only")
 )
 
-// Layer represents a single filesystem layer with metadata
+// Layer is one filesystem in a union's stack.
 type Layer struct {
 	fs       absfs.FileSystem
 	readOnly bool
 }
 
-// UnionFS implements a union filesystem with multiple layers
+// UnionFS merges a stack of filesystem layers into one view: an optional
+// writable layer on top of any number of read-only layers. It implements
+// absfs.SymlinkFileSystem, so it can be served or composed like any other
+// absfs filesystem.
+//
+// A UnionFS is safe for concurrent use. Operations that change the union
+// hold an exclusive lock while they resolve, copy up and write markers;
+// lookups and listings share a read lock. Reads and writes through an open
+// file handle do not take the lock.
 type UnionFS struct {
 	layers         []*Layer // ordered from top (highest precedence) to bottom
-	writableLayer  *Layer   // reference to the writable layer (if any)
+	writableLayer  *Layer   // the writable layer, layers[0], or nil
 	mu             sync.RWMutex
 	cache          *Cache
 	copyBufferSize int
+
+	cwdMu sync.RWMutex
+	cwd   string
 }
 
-// Option is a functional option for configuring UnionFS
+var _ absfs.SymlinkFileSystem = (*UnionFS)(nil)
+
+// Option configures a UnionFS in New.
 type Option func(*UnionFS)
 
-// WithWritableLayer adds a writable layer at the top of the layer stack
+// WithWritableLayer puts fs on top of the layer stack as the writable
+// layer, the only layer a union ever writes to. Every change, including
+// whiteouts and opaque markers, lands there; the other layers are never
+// modified.
 func WithWritableLayer(fs absfs.FileSystem) Option {
 	return func(ufs *UnionFS) {
 		layer := &Layer{fs: fs, readOnly: false}
@@ -54,45 +80,53 @@ func WithWritableLayer(fs absfs.FileSystem) Option {
 	}
 }
 
-// WithReadOnlyLayer adds a read-only layer to the layer stack
-// Read-only layers are added in order after the writable layer
+// WithReadOnlyLayer adds fs below the layers added so far. Layers are
+// searched in the order they were added, so the first read-only layer added
+// takes precedence over the next.
 func WithReadOnlyLayer(fs absfs.FileSystem) Option {
 	return func(ufs *UnionFS) {
-		layer := &Layer{fs: fs, readOnly: true}
-		// Simply append - layers will be in order: writable, then read-only in order added
-		ufs.layers = append(ufs.layers, layer)
+		ufs.layers = append(ufs.layers, &Layer{fs: fs, readOnly: true})
 	}
 }
 
-// WithStatCache enables stat caching with the specified TTL
+// WithStatCache enables a cache of Stat results with the given TTL; misses
+// are cached for half as long. See WithCacheConfig.
 func WithStatCache(enabled bool, ttl time.Duration) Option {
 	return func(ufs *UnionFS) {
-		negativeTTL := ttl / 2 // Negative cache expires faster
-		maxEntries := 1000
-		ufs.cache = newCache(enabled, ttl, negativeTTL, maxEntries)
+		ufs.cache = newCache(enabled, ttl, ttl/2, 1000)
 	}
 }
 
-// WithCacheConfig enables caching with custom configuration
+// WithCacheConfig enables a cache of Stat results with separate TTLs for
+// found and missing paths and a bound on entries per kind.
+//
+// Changes made through the union drop the cached entries at and under the
+// paths they touch. Changes made to a layer directly, and changes seen
+// through another path to the same file (a symbolic link), show only once
+// the entry expires.
 func WithCacheConfig(enabled bool, statTTL, negativeTTL time.Duration, maxEntries int) Option {
 	return func(ufs *UnionFS) {
 		ufs.cache = newCache(enabled, statTTL, negativeTTL, maxEntries)
 	}
 }
 
-// WithCopyBufferSize sets the buffer size for copy-on-write operations
+// WithCopyBufferSize sets the size of the buffer used to copy a file up to
+// the writable layer. The default is 32 KiB.
 func WithCopyBufferSize(size int) Option {
 	return func(ufs *UnionFS) {
 		ufs.copyBufferSize = size
 	}
 }
 
-// New creates a new UnionFS with the specified options
+// New returns a union of the layers the options add. Without
+// WithWritableLayer the union is read-only and every change fails with
+// ErrNoWritableLayer.
 func New(opts ...Option) *UnionFS {
 	ufs := &UnionFS{
 		layers:         make([]*Layer, 0),
-		copyBufferSize: 32 * 1024, // default 32KB
-		cache:          newCache(false, 0, 0, 0), // disabled by default
+		copyBufferSize: defaultCopyBufferSize,
+		cache:          newCache(false, 0, 0, 0),
+		cwd:            "/",
 	}
 	for _, opt := range opts {
 		opt(ufs)
@@ -105,142 +139,14 @@ func (ufs *UnionFS) Name() string {
 	return "UnionFS"
 }
 
-// isWhiteout checks if a filename is a whiteout marker
-func isWhiteout(name string) bool {
-	base := path.Base(name)
-	return strings.HasPrefix(base, WhiteoutPrefix)
-}
-
-// isOpaqueWhiteout checks if a directory contains an opaque whiteout marker
-func isOpaqueWhiteout(name string) bool {
-	return path.Base(name) == OpaqueWhiteout
-}
-
-// whiteoutPath returns the whiteout path for a given file path
-func whiteoutPath(p string) string {
-	dir := path.Dir(p)
-	base := path.Base(p)
-	return path.Join(dir, WhiteoutPrefix+base)
-}
-
-// originalPath returns the original path from a whiteout path
-func originalPath(whiteoutPath string) (string, bool) {
-	base := path.Base(whiteoutPath)
-	if !strings.HasPrefix(base, WhiteoutPrefix) {
-		return "", false
-	}
-	original := strings.TrimPrefix(base, WhiteoutPrefix)
-	if original == "__dir_opaque" {
-		return "", false
-	}
-	dir := path.Dir(whiteoutPath)
-	return path.Join(dir, original), true
-}
-
-// cleanPath normalizes a virtual filesystem path using forward slashes
+// cleanPath normalizes a virtual filesystem path: forward slashes, clean,
+// and absolute.
 func cleanPath(p string) string {
-	// Use path.Clean for virtual paths (always uses forward slashes)
 	cleaned := path.Clean(p)
-	// Ensure paths are absolute (start with /)
 	if !strings.HasPrefix(cleaned, "/") {
 		cleaned = "/" + cleaned
 	}
 	return cleaned
-}
-
-// checkWhiteout checks if a file is marked as deleted via whiteout in any layer above the given index
-func (ufs *UnionFS) checkWhiteout(p string, startLayer int) bool {
-	wPath := whiteoutPath(p)
-	for i := 0; i < startLayer; i++ {
-		layer := ufs.layers[i]
-		if _, err := layer.fs.Stat(wPath); err == nil {
-			return true
-		}
-		// Check for opaque directory whiteout in parent directories
-		// Use path package for virtual paths (forward slashes)
-		dir := path.Dir(p)
-		for dir != "/" && dir != "." {
-			opaquePath := path.Join(dir, OpaqueWhiteout)
-			if _, err := layer.fs.Stat(opaquePath); err == nil {
-				return true
-			}
-			dir = path.Dir(dir)
-		}
-	}
-	return false
-}
-
-// findFile searches for a file across all layers, respecting whiteouts
-// Returns the file info, layer index, and error
-func (ufs *UnionFS) findFile(path string) (os.FileInfo, int, error) {
-	path = cleanPath(path)
-
-	// Check cache first
-	if info, layer, ok := ufs.cache.getStat(path); ok {
-		return info, layer, nil
-	}
-
-	// Check negative cache
-	if ufs.cache.isNegative(path) {
-		return nil, -1, os.ErrNotExist
-	}
-
-	ufs.mu.RLock()
-	defer ufs.mu.RUnlock()
-
-	for i, layer := range ufs.layers {
-		// Check if this file is whited out in an upper layer
-		if ufs.checkWhiteout(path, i) {
-			continue
-		}
-
-		info, err := layer.fs.Stat(path)
-		if err == nil {
-			// Found the file - cache it
-			ufs.cache.putStat(path, info, i)
-			return info, i, nil
-		}
-		if !os.IsNotExist(err) {
-			// Real error (not just file not found)
-			return nil, -1, err
-		}
-	}
-
-	// File not found in any layer - cache negative result
-	ufs.cache.putNegative(path)
-	return nil, -1, os.ErrNotExist
-}
-
-// getWritableLayer returns the writable layer or an error
-func (ufs *UnionFS) getWritableLayer() (*Layer, error) {
-	ufs.mu.RLock()
-	defer ufs.mu.RUnlock()
-
-	if ufs.writableLayer == nil {
-		return nil, ErrNoWritableLayer
-	}
-	return ufs.writableLayer, nil
-}
-
-// ensureDir ensures all parent directories exist in the writable layer
-func (ufs *UnionFS) ensureDir(p string) error {
-	layer, err := ufs.getWritableLayer()
-	if err != nil {
-		return err
-	}
-
-	dir := path.Dir(p)
-	if dir == "/" || dir == "." {
-		return nil
-	}
-
-	// Check if directory already exists
-	if _, err := layer.fs.Stat(dir); err == nil {
-		return nil
-	}
-
-	// Create directory with proper permissions
-	return layer.fs.MkdirAll(dir, 0755)
 }
 
 // InvalidateCache removes a path from the cache

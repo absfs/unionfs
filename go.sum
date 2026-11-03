@@ -1,5 +1,7 @@
 github.com/absfs/absfs v1.0.0 h1:T+OoA3wbDimdMXt5y2IpGss1qBHF9UbK0XfxXwCyu/c=
 github.com/absfs/absfs v1.0.0/go.mod h1:30jxoFsix2CEDiZdsZD6KCOm6F+SCO/JVK3CFrj1SVo=
+github.com/absfs/basefs v1.0.0 h1:ZDDf80GUE7SwprGCshI68HYRgVI9gY2Fh0fLZkiq5lw=
+github.com/absfs/basefs v1.0.0/go.mod h1:vGfYlU0J/Rmryx/RHWtftY6TfdiOuAhgPNEPbJaoWMo=
 github.com/absfs/fstesting v1.0.0 h1:Mo44CcqxlI4OiX+cUNLpVa+I7l6XEhU7BHDcPcN/XE0=
 github.com/absfs/fstesting v1.0.0/go.mod h1:eEaRAMpj2qDeIghgkLHoiFGfA1Kwcaa4ATbF7YYrpcg=
 github.com/absfs/fstools v0.9.1 h1:TGSlOpPbEMZnXikpseANJ0tm/E7l72vYySnU49KxP4Y=

@@ -1104,86 +1104,6 @@ func TestReaddirWithCount(t *testing.T) {
 // Copy-on-Write Tests
 // =============================================================================
 
-// TestCopyUpDir tests copying up directories
-func TestCopyUpDir(t *testing.T) {
-	overlay := mustNewMemFS()
-	base := mustNewMemFS()
-
-	// Create directory with specific mode in base
-	base.MkdirAll("/testdir", 0700)
-
-	ufs := New(
-		WithWritableLayer(overlay),
-		WithReadOnlyLayer(base),
-	)
-
-	// Get directory info
-	info, _, _ := ufs.findFile("/testdir")
-
-	// Trigger copy-up of directory
-	err := ufs.copyUpDir("/testdir", info)
-	if err != nil {
-		t.Fatalf("copyUpDir failed: %v", err)
-	}
-
-	// Verify directory exists in overlay
-	overlayInfo, err := overlay.Stat("/testdir")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !overlayInfo.IsDir() {
-		t.Error("expected directory")
-	}
-}
-
-// TestCopyUpParents tests copying up parent directories
-func TestCopyUpParents(t *testing.T) {
-	overlay := mustNewMemFS()
-	base := mustNewMemFS()
-
-	// Create nested directory in base
-	base.MkdirAll("/a/b/c", 0755)
-	writeFile(base, "/a/b/c/file.txt", []byte("content"), 0644)
-
-	ufs := New(
-		WithWritableLayer(overlay),
-		WithReadOnlyLayer(base),
-	)
-
-	// Copy up parents for a deeply nested file
-	err := ufs.copyUpParents("/a/b/c/newfile.txt")
-	if err != nil {
-		t.Fatalf("copyUpParents failed: %v", err)
-	}
-
-	// Parent directories should exist (either in overlay or accessible)
-	if _, err := ufs.Stat("/a/b/c"); err != nil {
-		t.Error("parent directory should be accessible")
-	}
-}
-
-// TestCopyUpParentsNonExistent tests copyUpParents when parent doesn't exist
-func TestCopyUpParentsNonExistent(t *testing.T) {
-	overlay := mustNewMemFS()
-	base := mustNewMemFS()
-
-	ufs := New(
-		WithWritableLayer(overlay),
-		WithReadOnlyLayer(base),
-	)
-
-	// Copy up parents for path where parents don't exist
-	err := ufs.copyUpParents("/newdir/newfile.txt")
-	if err != nil {
-		t.Fatalf("copyUpParents failed: %v", err)
-	}
-
-	// Parent directory should be created
-	if _, err := overlay.Stat("/newdir"); err != nil {
-		t.Error("parent directory should be created")
-	}
-}
-
 // TestCopyUpLargeFile tests copying up large files
 func TestCopyUpLargeFile(t *testing.T) {
 	overlay := mustNewMemFS()
@@ -1346,80 +1266,6 @@ func TestSymlinkIfPossible(t *testing.T) {
 	}
 	if target != "/target" {
 		t.Errorf("expected target '/target', got '%s'", target)
-	}
-}
-
-// TestFollowSymlinks tests the followSymlinks method
-func TestFollowSymlinks(t *testing.T) {
-	overlay := mustNewMemFS()
-	base := mustNewMemFS()
-
-	writeFile(base, "/test.txt", []byte("content"), 0644)
-
-	ufs := New(
-		WithWritableLayer(overlay),
-		WithReadOnlyLayer(base),
-	)
-
-	// For regular file, should return the same path
-	resolved, err := ufs.followSymlinks("/test.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Normalize for cross-platform comparison
-	if resolved != "/test.txt" {
-		t.Errorf("got %q, want /test.txt", resolved)
-	}
-}
-
-// TestResolveSymlinkMaxDepth tests resolveSymlink max depth handling
-func TestResolveSymlinkMaxDepth(t *testing.T) {
-	overlay := mustNewMemFS()
-	base := mustNewMemFS()
-
-	writeFile(base, "/test.txt", []byte("content"), 0644)
-
-	ufs := New(
-		WithWritableLayer(overlay),
-		WithReadOnlyLayer(base),
-	)
-
-	// With depth 0, should return error
-	_, err := ufs.resolveSymlink("/test.txt", 0)
-	if err != os.ErrInvalid {
-		t.Errorf("expected ErrInvalid for max depth, got %v", err)
-	}
-}
-
-// TestIsSymlinkLoop tests the isSymlinkLoop helper function
-func TestIsSymlinkLoop(t *testing.T) {
-	visited := map[string]bool{
-		"/a":     true,
-		"/a/b":   true,
-		"/a/b/c": true,
-	}
-
-	// Should detect loop when target points back
-	if !isSymlinkLoop("/x", "/a/b", visited) {
-		t.Error("should detect loop")
-	}
-
-	// Should not detect loop for unvisited path
-	if isSymlinkLoop("/x", "/d/e/f", visited) {
-		t.Error("should not detect loop for new path")
-	}
-
-	// Test with relative path
-	if !isSymlinkLoop("/a/b/c", "../b", visited) {
-		t.Error("should detect loop with relative path")
-	}
-
-	// Test direct self-reference
-	visited2 := map[string]bool{
-		"/test": true,
-	}
-	if !isSymlinkLoop("/link", "/test", visited2) {
-		t.Error("should detect direct loop")
 	}
 }
 
@@ -1930,48 +1776,6 @@ func TestChtimesInWritableLayer(t *testing.T) {
 	}
 }
 
-// TestCopyUpFileAlreadyInWritable tests copyUpFile when file is already in writable
-func TestCopyUpFileAlreadyInWritable(t *testing.T) {
-	overlay := mustNewMemFS()
-	base := mustNewMemFS()
-
-	ufs := New(
-		WithWritableLayer(overlay),
-		WithReadOnlyLayer(base),
-	)
-
-	// Create file in writable layer
-	writeFile(overlay, "/test.txt", []byte("content"), 0644)
-
-	// Try to copy up - should be no-op
-	info, _, _ := ufs.findFile("/test.txt")
-	err := ufs.copyUpFile("/test.txt", info)
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestCopyUpAlreadyInWritable tests copyUp when file is already in writable
-func TestCopyUpAlreadyInWritable(t *testing.T) {
-	overlay := mustNewMemFS()
-	base := mustNewMemFS()
-
-	ufs := New(
-		WithWritableLayer(overlay),
-		WithReadOnlyLayer(base),
-	)
-
-	// Create file in writable layer
-	writeFile(overlay, "/test.txt", []byte("content"), 0644)
-
-	// Try to copy up - should be no-op
-	info, _, _ := ufs.findFile("/test.txt")
-	err := ufs.copyUp("/test.txt", info)
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
 // TestReadlinkMultipleLayers tests Readlink searching across layers
 func TestReadlinkMultipleLayers(t *testing.T) {
 	layer0 := mustNewMemFS()
@@ -2093,21 +1897,6 @@ func TestCacheDisabled(t *testing.T) {
 	}
 }
 
-// TestSplitPathHelperEdgeCases tests splitPathHelper with edge cases
-func TestSplitPathHelperEdgeCases(t *testing.T) {
-	// Test with dot
-	result := splitPathHelper(".")
-	if len(result) != 0 {
-		t.Errorf("splitPathHelper(\".\") = %v, want []", result)
-	}
-
-	// Test with single component
-	result = splitPathHelper("foo")
-	if len(result) != 1 || result[0] != "foo" {
-		t.Errorf("splitPathHelper(\"foo\") = %v, want [foo]", result)
-	}
-}
-
 // TestRemoveNonExistent tests Remove on non-existent file
 func TestRemoveNonExistent(t *testing.T) {
 	overlay := mustNewMemFS()
@@ -2124,7 +1913,8 @@ func TestRemoveNonExistent(t *testing.T) {
 	}
 }
 
-// TestRemoveAllNonExistent tests RemoveAll on non-existent path
+// TestRemoveAllNonExistent tests RemoveAll on non-existent path: like
+// os.RemoveAll, it succeeds.
 func TestRemoveAllNonExistent(t *testing.T) {
 	overlay := mustNewMemFS()
 	base := mustNewMemFS()
@@ -2134,9 +1924,8 @@ func TestRemoveAllNonExistent(t *testing.T) {
 		WithReadOnlyLayer(base),
 	)
 
-	err := ufs.RemoveAll("/nonexistent")
-	if err == nil {
-		t.Error("expected error for non-existent path")
+	if err := ufs.RemoveAll("/nonexistent"); err != nil {
+		t.Errorf("RemoveAll of a missing path: %v, want nil", err)
 	}
 }
 

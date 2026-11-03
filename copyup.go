@@ -1,142 +1,210 @@
 package unionfs
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path"
+	"syscall"
+
+	"github.com/absfs/absfs"
 )
 
-// copyUp copies a file from a lower layer to the writable layer
-func (ufs *UnionFS) copyUp(path string, info os.FileInfo) error {
-	layer, err := ufs.getWritableLayer()
-	if err != nil {
-		return err
-	}
+// chmodBits are the mode bits Chmod applies: permissions plus setuid,
+// setgid and sticky.
+const chmodBits = os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky
 
-	// Check if file already exists in writable layer
-	if _, err := layer.fs.Stat(path); err == nil {
-		// File already exists in writable layer, nothing to do
-		return nil
-	}
-
-	// Ensure parent directory exists
-	if err := ufs.ensureDir(path); err != nil {
-		return err
-	}
-
-	// Handle directories
-	if info.IsDir() {
-		return ufs.copyUpDir(path, info)
-	}
-
-	// Handle regular files
-	return ufs.copyUpFile(path, info)
+// upper returns the writable layer's filesystem. Callers check that the
+// union has a writable layer first.
+func (ufs *UnionFS) upper() absfs.FileSystem {
+	return ufs.layers[0].fs
 }
 
-// copyUpFile copies a regular file to the writable layer
-func (ufs *UnionFS) copyUpFile(path string, info os.FileInfo) error {
-	layer, err := ufs.getWritableLayer()
-	if err != nil {
-		return err
-	}
-
-	// Find the source file in lower layers
-	_, layerIdx, err := ufs.findFile(path)
-	if err != nil {
-		return err
-	}
-
-	if layerIdx == 0 {
-		// Already in writable layer
-		return nil
-	}
-
-	sourceLayer := ufs.layers[layerIdx]
-
-	// Open source file
-	srcFile, err := sourceLayer.fs.Open(path)
-	if err != nil {
-		return fmt.Errorf("failed to open source file: %w", err)
-	}
-	defer srcFile.Close()
-
-	// Create destination file
-	dstFile, err := layer.fs.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
-	if err != nil {
-		return fmt.Errorf("failed to create destination file: %w", err)
-	}
-	defer dstFile.Close()
-
-	// Copy file contents
-	buf := make([]byte, ufs.copyBufferSize)
-	if _, err := io.CopyBuffer(dstFile, srcFile, buf); err != nil {
-		return fmt.Errorf("failed to copy file contents: %w", err)
-	}
-
-	// Preserve file metadata
-	if err := layer.fs.Chmod(path, info.Mode()); err != nil {
-		return fmt.Errorf("failed to set file mode: %w", err)
-	}
-
-	if err := layer.fs.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
-		// Non-fatal error
-		_ = err
-	}
-
-	return nil
+// chmodUpper sets the permission bits of p in the writable layer to those of
+// mode, keeping the file type of typ. Some layers (memfs) store the mode they
+// are given verbatim, and would otherwise lose the directory bit.
+func (ufs *UnionFS) chmodUpper(p string, typ, mode os.FileMode) error {
+	return ufs.upper().Chmod(p, typ.Type()|mode&chmodBits)
 }
 
-// copyUpDir creates a directory in the writable layer
-func (ufs *UnionFS) copyUpDir(path string, info os.FileInfo) error {
-	layer, err := ufs.getWritableLayer()
-	if err != nil {
-		return err
-	}
-
-	// Create directory in writable layer
-	if err := layer.fs.MkdirAll(path, info.Mode()); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	// Preserve directory metadata
-	if err := layer.fs.Chmod(path, info.Mode()); err != nil {
-		return fmt.Errorf("failed to set directory mode: %w", err)
-	}
-
-	if err := layer.fs.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
-		// Non-fatal error
-		_ = err
-	}
-
-	return nil
-}
-
-// copyUpParents ensures all parent directories exist in the writable layer
-func (ufs *UnionFS) copyUpParents(p string) error {
-	dir := path.Dir(p)
-	if dir == "/" || dir == "." {
+// ensureUpperDir makes sure directory node n exists in the writable layer,
+// copying it up, with its parents, from the layer it comes from. It updates
+// n to record the writable layer as its top.
+func (ufs *UnionFS) ensureUpperDir(n *node) error {
+	if ufs.inUpper(n) {
 		return nil
 	}
-
-	// Check if parent directory exists in any layer
-	info, layerIdx, err := ufs.findFile(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Parent doesn't exist, create it
-			layer, err := ufs.getWritableLayer()
-			if err != nil {
-				return err
-			}
-			return layer.fs.MkdirAll(dir, 0755)
+	if ufs.layerHas(0, n.path) {
+		n.layers = append([]int{0}, n.layers...)
+		return nil
+	}
+	if n.parent != nil {
+		if err := ufs.ensureUpperDir(n.parent); err != nil {
+			return err
 		}
+	}
+	up := ufs.upper()
+	if err := up.Mkdir(n.path, 0700); err != nil {
+		return fmt.Errorf("unionfs: copy up directory %s: %w", n.path, err)
+	}
+	if err := ufs.chmodUpper(n.path, n.info.Mode(), n.info.Mode()); err != nil {
+		return fmt.Errorf("unionfs: copy up directory %s: %w", n.path, err)
+	}
+	_ = up.Chtimes(n.path, n.info.ModTime(), n.info.ModTime())
+	n.layers = append([]int{0}, n.layers...)
+	return nil
+}
+
+// copyUp brings node n into the writable layer: directories as an empty
+// directory with the same mode and time, everything else as copyUpFile does.
+func (ufs *UnionFS) copyUp(n *node) error {
+	if ufs.inUpper(n) {
+		return nil
+	}
+	if n.info.IsDir() {
+		return ufs.ensureUpperDir(n)
+	}
+	return ufs.copyUpFile(n, true)
+}
+
+// copyUpFile copies the non-directory node n into the writable layer with
+// its mode and modification time. A symbolic link is copied as a link to the
+// same target. A regular file's contents are copied when withData is set;
+// otherwise it is created empty, for callers about to truncate it. On
+// failure no partial copy is left behind.
+func (ufs *UnionFS) copyUpFile(n *node, withData bool) error {
+	if err := ufs.ensureUpperDir(n.parent); err != nil {
 		return err
 	}
+	up := ufs.upper()
+	mode := n.info.Mode()
 
-	// If parent exists in a lower layer, copy it up
-	if layerIdx > 0 && info.IsDir() {
-		return ufs.copyUpDir(dir, info)
+	if isSymlink(n.info) {
+		target, err := ufs.layerReadlink(n.top(), n.path)
+		if err != nil {
+			return err
+		}
+		s, ok := up.(symlinker)
+		if !ok {
+			return &os.PathError{Op: "copyup", Path: n.path, Err: errors.ErrUnsupported}
+		}
+		if err := s.Symlink(target, n.path); err != nil {
+			return err
+		}
+		n.layers = []int{0}
+		return nil
+	}
+	if !mode.IsRegular() {
+		return &os.PathError{Op: "copyup", Path: n.path, Err: syscall.ENOTSUP}
 	}
 
+	dst, err := up.OpenFile(n.path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("unionfs: copy up %s: %w", n.path, err)
+	}
+	if withData {
+		err = ufs.copyData(dst, n)
+	}
+	if cerr := dst.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = ufs.chmodUpper(n.path, mode, mode)
+	}
+	if err != nil {
+		_ = up.Remove(n.path)
+		return fmt.Errorf("unionfs: copy up %s: %w", n.path, err)
+	}
+	_ = up.Chtimes(n.path, n.info.ModTime(), n.info.ModTime())
+	n.layers = []int{0}
+	return nil
+}
+
+// copyData copies n's contents from its layer into dst.
+func (ufs *UnionFS) copyData(dst io.Writer, n *node) error {
+	src, err := ufs.layers[n.top()].fs.Open(n.path)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	size := ufs.copyBufferSize
+	if size <= 0 {
+		size = defaultCopyBufferSize
+	}
+	_, err = io.CopyBuffer(dst, onlyReader{src}, make([]byte, size))
+	return err
+}
+
+// onlyReader hides a source's WriterTo, so that io.CopyBuffer uses the
+// configured buffer.
+type onlyReader struct{ io.Reader }
+
+// materialize copies the whole merged tree under directory d into the
+// writable layer and then removes the whiteouts and opaque markers inside
+// it, so the upper copy alone holds everything the merged view showed.
+// Rename uses it to move a directory that lower layers contribute to.
+func (ufs *UnionFS) materialize(d *node) error {
+	if err := ufs.ensureUpperDir(d); err != nil {
+		return err
+	}
+	ents, err := ufs.listDir(d)
+	if err != nil {
+		return err
+	}
+	for _, e := range ents {
+		c, err := ufs.child(d, e.Name())
+		if err != nil {
+			return err
+		}
+		if c.info.IsDir() {
+			err = ufs.materialize(c)
+		} else {
+			err = ufs.copyUp(c)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return ufs.clearMarkers(d.path)
+}
+
+// clearMarkers removes the whiteouts and the opaque marker held directly in
+// directory dir of the writable layer.
+func (ufs *UnionFS) clearMarkers(dir string) error {
+	ents, err := ufs.upper().ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range ents {
+		if !IsWhiteout(e.Name()) {
+			continue
+		}
+		if err := ufs.upper().Remove(path.Join(dir, e.Name())); err != nil && !isNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeMarker creates the empty marker file p (a whiteout or an opaque
+// marker) in the writable layer.
+func (ufs *UnionFS) writeMarker(p string) error {
+	f, err := ufs.upper().OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// dropWhiteout removes the whiteout for p from the writable layer, if any.
+func (ufs *UnionFS) dropWhiteout(p string) error {
+	wh := WhiteoutName(p)
+	if !ufs.layerHas(0, wh) {
+		return nil
+	}
+	if err := ufs.upper().Remove(wh); err != nil && !isNotExist(err) {
+		return err
+	}
 	return nil
 }
