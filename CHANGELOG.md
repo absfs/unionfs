@@ -119,6 +119,14 @@ match POSIX, and callers relying on the old ones should read
 - The Stat cache (`WithStatCache`, `WithCacheConfig`) holds `Lstat`
   results and misses too; before, it covered only `Stat`.
 - `BenchmarkLstat`, and a test that counts the layer calls of an `Lstat`.
+- `ReservedNames(fs, root)` lists the names starting with `.wh.` in a
+  tree, which a union takes for markers in any layer, so a consumer can
+  detect a lower it cannot represent.
+- `WithMarkersOnlyInWritableLayer()` reads markers only in the writable
+  layer: a read-only layer's `.wh.` names are ordinary, read-only entries
+  instead of vanishing from the merged view, at the cost of read-only
+  layers carrying no deletions. The default, markers in every layer, is
+  unchanged.
 - The README documents the whiteout format exactly and how to read a
   writable layer as a changeset.
 - Tests over host directories (basefs over osfs), fault injection, a

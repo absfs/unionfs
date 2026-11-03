@@ -143,7 +143,9 @@ More, compiled and checked by `go test`, in
   that lower layers contribute to is copied up whole and moved, leaving a
   self-contained copy and one whiteout.
 - **Changeset helpers:** `IsWhiteout`, `IsOpaqueMarker`, `IsMetaMarker`,
-  `WhiteoutTarget`, `WhiteoutName`, `MetaTarget`, `MetaMarkerName`.
+  `WhiteoutTarget`, `WhiteoutName`, `MetaTarget`, `MetaMarkerName`, and
+  `ReservedNames` to find `.wh.` names in a tree before using it as a
+  lower.
 - **Optional caches.** A lookup cache (`WithLookupCache`) remembers which
   layer holds each name, so a repeated `Lstat` or `Stat` costs one layer
   call instead of several per path element, and never serves stale
@@ -214,6 +216,26 @@ them skips every `.wh..wh.` name, as it already must, and so sees no change
 for such a file: it misses the metadata change but nothing else. A reader
 that knows them reports a metadata-only change to `MetaTarget(marker)`,
 taking the new mode, mtime and owner from the marker itself.
+
+**Names starting with `.wh.` in a read-only layer.** By default markers
+count in every layer, as in AUFS and OCI image layers, so an upper
+captured from one union can be stacked as a read-only layer of another
+and keep its deletions. The price: a read-only layer's own file or
+directory whose name starts with `.wh.` (a container-image test fixture,
+say) is taken for a marker and silently missing from the merged view, and
+a `.wh.<x>` among them hides `<x>` in the layers below. The union refuses
+to create such names, so only a lower can have one. Two ways out:
+
+- `unionfs.ReservedNames(fs, root)` lists every such name under `root` of
+  any absfs filesystem, without following links, so a consumer can detect
+  a lower it cannot represent before using it (and fall back, or refuse).
+- `WithMarkersOnlyInWritableLayer()` reads markers only in the writable
+  layer. In read-only layers `.wh.` names are ordinary entries: they show,
+  can be read, listed and looked up, but cannot be changed, removed,
+  renamed or created under (EPERM), because the writable layer has no way
+  to represent them. Removing a directory that holds them works. The cost
+  is that read-only layers can no longer carry whiteouts, opaque markers
+  or metadata markers, so captured uppers cannot be stacked.
 
 **The opaque marker differs from OCI and AUFS.** Their opaque marker is
 `.wh..wh..opq`; this package's is `.wh.__dir_opaque`, unchanged since
@@ -317,6 +339,9 @@ change fails with `ErrNoWritableLayer`.
   write permission on the copied-up directory just while it copies an
   entry up. Creating, removing or renaming an entry directly inside it
   fails with EACCES on a host filesystem, as it would on the host.
+- **A lower's own `.wh.` names vanish** by default, taken for markers.
+  Check a lower with `ReservedNames`, or use
+  `WithMarkersOnlyInWritableLayer` (see the changeset section).
 - **Special files** (devices, pipes, sockets) cannot be copied up
   (ENOTSUP). **Hard links** are not tracked across layers.
 - **Renaming a large lower directory copies the whole tree** into the
@@ -381,6 +406,7 @@ ufs := unionfs.New(
 | `WithLookupCache(ttl, maxEntries)`                  | caches path resolution, not attributes; off unless `ttl > 0`      |
 | `WithStatCache(enabled, ttl)`                       | caches `Stat` and `Lstat`; misses for `ttl/2`                     |
 | `WithCacheConfig(enabled, ttl, negTTL, maxEntries)` | the same, with every knob                                         |
+| `WithMarkersOnlyInWritableLayer()`                  | `.wh.` names in read-only layers are plain entries, not markers   |
 | `WithCopyBufferSize(n)`                             | copy-up buffer, 32 KiB by default                                 |
 
 ## Testing

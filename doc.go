@@ -26,7 +26,8 @@ lower layer has.
 ReadDir and an opened directory list the merged entries, sorted by name,
 upper layers shadowing lower ones, whited-out names left out. Whiteout and
 opaque marker files never appear in the merged view, and creating a name
-that starts with WhiteoutPrefix fails with EPERM.
+that starts with WhiteoutPrefix fails with EPERM (see Whiteout format for
+such names in a read-only layer).
 
 # Writing
 
@@ -124,6 +125,18 @@ MetaMarkerName recognise and build marker names; they take
 slash-separated names without a trailing slash, so convert a host path with
 filepath.ToSlash first. See the example for WhiteoutTarget, and the README,
 for a walk that does this.
+
+By default markers count in every layer, so that a writable layer captured
+from one union can be stacked as a read-only layer of another, as OCI
+image layers are. A read-only layer's own entries whose names start with
+WhiteoutPrefix are therefore taken for markers: they never appear, and a
+whiteout among them hides a name in the layers below. ReservedNames lists
+such names in a tree, so a caller can detect a lower the union cannot
+represent. WithMarkersOnlyInWritableLayer reads markers only in the
+writable layer: in read-only layers such names are ordinary, read-only
+entries (changing, removing or renaming one, or creating anything under
+one, fails with EPERM), and those layers can carry no deletions or
+metadata markers.
 
 Linux overlayfs records the same facts differently (character devices 0/0
 for whiteouts, an xattr for opaque directories); unionfs does not read or
