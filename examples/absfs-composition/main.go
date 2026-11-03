@@ -135,7 +135,7 @@ func compositionPatternExample() {
 	}
 	fmt.Printf("   ✓ File access works: %s (%d bytes)\n", info.Name(), info.Size())
 
-	// Show how ExtendFiler adds convenience methods
+	// absfs interfaces
 	fmt.Println()
 	fmt.Println("   absfs interfaces:")
 	fmt.Println("   • *UnionFS implements absfs.SymlinkFileSystem directly")
@@ -143,57 +143,6 @@ func compositionPatternExample() {
 	fmt.Println("   ✓ Single responsibility + composability!")
 }
 
-// Example showing how you might compose with actual absfs packages
-// (This is conceptual - requires actual absfs packages to be available)
-func conceptualFullComposition() {
-	/*
-		// Commented out because it requires external packages
-		// This shows the IDEAL composition pattern in the absfs ecosystem
-
-		import (
-			"github.com/absfs/memfs"
-			"github.com/absfs/osfs"
-			"github.com/absfs/rofs"
-			"github.com/absfs/cachefs"
-			"github.com/absfs/metricsfs"
-		)
-
-		// Layer 1: OS filesystem as base
-		osBase := osfs.NewFS()
-
-		// Layer 2: In-memory overlay
-		memOverlay := memfs.NewFS()
-
-		// Create union of layers
-		union := unionfs.New(
-			unionfs.WithWritableLayer(memOverlay),
-			unionfs.WithReadOnlyLayer(osBase),
-		).FileSystem()
-
-		// Wrap with caching for performance
-		cached := cachefs.New(union)
-
-		// Add read-only enforcement
-		readOnly := rofs.New(cached)
-
-		// Add metrics/observability
-		monitored := metricsfs.New(readOnly)
-
-		// Use the fully composed filesystem
-		monitored.Chdir("/app")
-		file, _ := monitored.Open("config.yml")
-
-		// Every layer adds ONE responsibility:
-		// • unionfs: Multi-layer composition + copy-on-write
-		// • cachefs: Performance optimization
-		// • rofs: Read-only enforcement
-		// • metricsfs: Observability
-		//
-		// Each can be added/removed independently!
-	*/
-}
-
-func init() {
-	// Suppress unused function warning
-	_ = conceptualFullComposition
-}
+// The same pattern extends further: the union is an absfs.FileSystem, so
+// other absfs wrappers (read-only enforcement, caching, metrics) can be
+// layered over it, each adding one responsibility.
