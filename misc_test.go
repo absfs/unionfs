@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/absfs/absfs"
 )
 
 func TestConcurrentChanges(t *testing.T) {
@@ -215,4 +217,120 @@ func TestMiscErrors(t *testing.T) {
 	if err := ufs.MkdirAll("/m0/x", 0755); !errors.Is(err, syscall.ELOOP) {
 		t.Fatalf("MkdirAll through a loop: %v", err)
 	}
+}
+
+// TestNegativeStatCache checks that a cached miss is served without asking
+// the layers, that every way of creating the name drops it, and that it
+// expires.
+func TestNegativeStatCache(t *testing.T) {
+	upper, lower := newFaultFS(t), newFaultFS(t)
+	lowerTree(t, lower)
+	ufs := New(WithWritableLayer(upper), WithReadOnlyLayer(lower),
+		WithCacheConfig(true, time.Hour, time.Hour, 100))
+
+	names := []string{"/c", "/m", "/s", "/r", "/later"}
+	for _, n := range names {
+		if _, err := ufs.Stat(n); !os.IsNotExist(err) {
+			t.Fatalf("Stat %s: %v", n, err)
+		}
+	}
+	if s := ufs.CacheStats(); s.NegativeCacheSize != len(names) {
+		t.Fatalf("cache stats %+v", s)
+	}
+
+	// Served from the cache: failing layers are not consulted.
+	upper.failOn("lstat", "*")
+	upper.failOn("stat", "*")
+	lower.failOn("lstat", "*")
+	for _, n := range names {
+		if _, err := ufs.Stat(n); !os.IsNotExist(err) {
+			t.Fatalf("cached miss for %s: %v", n, err)
+		}
+	}
+	upper.clear()
+	lower.clear()
+
+	put(t, ufs, "/c", "c")
+	must(t, ufs.Mkdir("/m", 0755))
+	must(t, ufs.Symlink("/d/a", "/s"))
+	must(t, ufs.Rename("/top", "/r"))
+	for _, n := range names[:4] {
+		if _, err := ufs.Stat(n); err != nil {
+			t.Fatalf("Stat %s after creating it: %v", n, err)
+		}
+	}
+
+	// A file put in a layer directly shows once the miss expires.
+	put(t, upper, "/later", "l")
+	if _, err := ufs.Stat("/later"); !os.IsNotExist(err) {
+		t.Fatalf("Stat /later before expiry: %v", err)
+	}
+	later := time.Now().Add(2 * time.Hour)
+	ufs.cache.now = func() time.Time { return later }
+	if _, err := ufs.Stat("/later"); err != nil {
+		t.Fatalf("Stat /later after expiry: %v", err)
+	}
+}
+
+// TestCreateThroughLinkChainBound creates a file through chains of dangling
+// links: as on Linux, MAXSYMLINKS links are followed and one more is ELOOP.
+func TestCreateThroughLinkChainBound(t *testing.T) {
+	ufs, _, _ := newTestUnion(t)
+	chain := func(prefix string, links int, target string) {
+		for i := 0; i < links; i++ {
+			next := fmt.Sprintf("/%s%d", prefix, i+1)
+			if i == links-1 {
+				next = target
+			}
+			must(t, ufs.Symlink(next, fmt.Sprintf("/%s%d", prefix, i)))
+		}
+	}
+	chain("a", maxSymlinks, "/madeA")
+	put(t, ufs, "/a0", "a")
+	if get(t, ufs, "/madeA") != "a" {
+		t.Fatal("create through a chain at the limit")
+	}
+	chain("b", maxSymlinks+1, "/madeB")
+	if _, err := ufs.Create("/b0"); !errors.Is(err, syscall.ELOOP) {
+		t.Fatalf("Create through a chain past the limit: %v", err)
+	}
+	wantNotExist(t, ufs, "/madeB")
+}
+
+// chownRecorder records which of Chown and Lchown a layer was asked for.
+type chownRecorder struct {
+	absfs.SymlinkFileSystem
+	calls []string
+}
+
+func (r *chownRecorder) Chown(name string, uid, gid int) error {
+	r.calls = append(r.calls, "chown "+name)
+	return r.SymlinkFileSystem.Chown(name, uid, gid)
+}
+
+func (r *chownRecorder) Lchown(name string, uid, gid int) error {
+	r.calls = append(r.calls, "lchown "+name)
+	return r.SymlinkFileSystem.Lchown(name, uid, gid)
+}
+
+// TestLchownOfLowerLink checks that Lchown of a link only a lower layer has
+// copies the link up and changes the link, not its target.
+func TestLchownOfLowerLink(t *testing.T) {
+	mem, lower := mustNewMemFS().(absfs.SymlinkFileSystem), mustNewMemFS().(absfs.SymlinkFileSystem)
+	lowerTree(t, lower)
+	symlink(t, lower, "/top", "/ln")
+	upper := &chownRecorder{SymlinkFileSystem: mem}
+	ufs := New(WithWritableLayer(upper), WithReadOnlyLayer(lower))
+	must(t, ufs.Lchown("/ln", os.Getuid(), os.Getgid()))
+	wantNames(t, upper.calls, "lchown /ln")
+	if info, err := mem.Lstat("/ln"); err != nil || !isSymlink(info) {
+		t.Fatalf("link not copied up as a link: %v, %v", info, err)
+	}
+	if exists(mem, "/top") {
+		t.Fatal("Lchown copied up the link's target")
+	}
+	// Chown follows the link to its target.
+	upper.calls = nil
+	must(t, ufs.Chown("/ln", os.Getuid(), os.Getgid()))
+	wantNames(t, upper.calls, "chown /top")
 }

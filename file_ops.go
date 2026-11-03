@@ -14,8 +14,13 @@ import (
 	"github.com/absfs/absfs"
 )
 
-// writeFlags are the OpenFile flags that make an open a write.
-const writeFlags = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREATE | os.O_TRUNC
+// writeFlags are the OpenFile flags that make an open go to the writable
+// layer. modifyFlags are those that change an existing file: O_CREATE alone
+// does not, so it copies nothing up.
+const (
+	modifyFlags = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_TRUNC
+	writeFlags  = modifyFlags | os.O_CREATE
+)
 
 // abs makes name an absolute, clean virtual path, relative names being taken
 // from the union's working directory.
@@ -116,12 +121,13 @@ func (ufs *UnionFS) Create(name string) (absfs.File, error) {
 // OpenFile opens name with the given flags.
 //
 // A read-only open is served by the layer the file comes from; a directory
-// opens as a merged listing. An open with any write flag (O_WRONLY, O_RDWR,
-// O_APPEND, O_CREATE, O_TRUNC) is served by the writable layer: a file only
-// a lower layer has is copied up first (just its mode and times when O_TRUNC
-// is set), and a new file is created in the writable layer, its directory
-// copied up as needed and any whiteout for its name removed. Opening a
-// directory for writing fails with EISDIR.
+// opens as a merged listing. An open that can change the file (O_WRONLY,
+// O_RDWR, O_APPEND or O_TRUNC) is served by the writable layer, a file only a
+// lower layer has being copied up first (just its mode and times when O_TRUNC
+// is set). With O_CREATE a missing file is created in the writable layer,
+// its directory copied up as needed and any whiteout for its name removed;
+// O_CREATE alone on an existing file opens it for reading and copies nothing
+// up. Opening a directory with O_CREATE or for writing fails with EISDIR.
 func (ufs *UnionFS) OpenFile(name string, flag int, perm os.FileMode) (absfs.File, error) {
 	p := ufs.abs(name)
 	if flag&writeFlags == 0 {
@@ -143,6 +149,10 @@ func (ufs *UnionFS) OpenFile(name string, flag int, perm os.FileMode) (absfs.Fil
 		}
 		if n.info.IsDir() {
 			return nil, &os.PathError{Op: "open", Path: name, Err: syscall.EISDIR}
+		}
+		if flag&modifyFlags == 0 {
+			// O_RDONLY|O_CREATE of an existing file is a read.
+			return ufs.layers[n.top()].fs.OpenFile(n.path, flag&^os.O_CREATE, perm)
 		}
 		if !ufs.inUpper(n) {
 			if err := ufs.copyUpFile(n, flag&os.O_TRUNC == 0); err != nil {
@@ -216,6 +226,9 @@ func (ufs *UnionFS) createTarget(op, p string, follow bool) (*node, string, erro
 		if !follow || !isSymlink(c.info) {
 			return nil, "", &os.PathError{Op: op, Path: p, Err: os.ErrExist}
 		}
+		// resolve has already refused a chain this long for OpenFile, the
+		// only caller that follows; this bound guards against layers
+		// changed underneath the union.
 		if links >= maxSymlinks {
 			return nil, "", &os.PathError{Op: op, Path: p, Err: syscall.ELOOP}
 		}
@@ -240,6 +253,8 @@ func (ufs *UnionFS) Mkdir(name string, perm os.FileMode) error {
 	p := ufs.abs(name)
 	ufs.mu.Lock()
 	defer ufs.mu.Unlock()
+	// mkdirAt drops the resolved path; p may reach it through a link.
+	defer ufs.invalidate(p)
 	dir, base, err := ufs.createTarget("mkdir", p, false)
 	if err != nil {
 		return pathErr("mkdir", name, err)
@@ -294,13 +309,18 @@ func (ufs *UnionFS) MkdirAll(name string, perm os.FileMode) error {
 	if err != nil {
 		return pathErr("mkdir", name, err)
 	}
+	given := "/" // the prefix of p walked so far, as the caller named it
 	for _, elem := range splitPath(p) {
+		given = path.Join(given, elem)
 		next, err := ufs.child(cur, elem)
 		switch {
 		case os.IsNotExist(err):
 			if IsWhiteout(elem) {
 				return &os.PathError{Op: "mkdir", Path: name, Err: syscall.EPERM}
 			}
+			// mkdirAt drops the resolved path; given may reach it through
+			// a link.
+			ufs.invalidate(given)
 			if err := ufs.mkdirAt(cur, elem, perm); err != nil {
 				return pathErr("mkdir", name, err)
 			}
@@ -363,35 +383,56 @@ func (ufs *UnionFS) Remove(name string) error {
 
 // removeNode deletes n from the writable layer, recursively when all is
 // set, and writes a whiteout when a lower layer still has its name.
+//
+// The whiteout is written first: it has no effect while the writable layer
+// still has the entry, and once that is gone it hides the lower one at
+// once, so no failure part way exposes lower entries that n, or markers
+// inside n, were hiding.
 func (ufs *UnionFS) removeNode(n *node, all bool) error {
 	needWhiteout, err := ufs.lowerHas(n.parent, path.Base(n.path))
 	if err != nil {
 		return err
 	}
-	if ufs.inUpper(n) {
-		up := ufs.upper()
-		var err error
-		switch {
-		case all:
-			err = up.RemoveAll(n.path)
-		case n.info.IsDir():
-			if err = ufs.clearMarkers(n.path); err == nil {
-				err = up.Remove(n.path)
-			}
-		default:
-			err = up.Remove(n.path)
-		}
-		if err != nil {
-			return err
-		}
-	}
 	if !needWhiteout {
-		return nil
+		return ufs.removeUpper(n, all)
 	}
 	if err := ufs.ensureUpperDir(n.parent); err != nil {
 		return err
 	}
-	return ufs.writeMarker(WhiteoutName(n.path))
+	wh := WhiteoutName(n.path)
+	if err := ufs.writeMarker(wh); err != nil {
+		return err
+	}
+	if !ufs.inUpper(n) {
+		return nil
+	}
+	if n.info.IsDir() {
+		err = ufs.discard(n.path, n.info, all)
+	} else {
+		err = ufs.upper().Remove(n.path)
+	}
+	if err != nil && ufs.layerHas(0, n.path) {
+		_ = ufs.upper().Remove(wh)
+	}
+	return err
+}
+
+// removeUpper deletes n, which no lower layer has, from the writable layer.
+// A directory's own markers hide nothing then, so they go first.
+func (ufs *UnionFS) removeUpper(n *node, all bool) error {
+	if !ufs.inUpper(n) {
+		return nil
+	}
+	up := ufs.upper()
+	switch {
+	case all:
+		return up.RemoveAll(n.path)
+	case n.info.IsDir():
+		if err := ufs.clearMarkers(n.path); err != nil {
+			return err
+		}
+	}
+	return up.Remove(n.path)
 }
 
 // RemoveAll removes name and everything under it from the merged view. The
@@ -511,10 +552,11 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 		return fail(err)
 	}
 
-	// Bring the source wholly into the writable layer.
-	err = nil
+	// Bring the source wholly into the writable layer; the merged view
+	// does not change.
+	materialized := isDir && !(ufs.inUpper(src) && len(src.layers) == 1)
 	switch {
-	case isDir && !(ufs.inUpper(src) && len(src.layers) == 1):
+	case materialized:
 		err = ufs.materialize(src)
 	case !isDir:
 		err = ufs.copyUp(src)
@@ -526,41 +568,45 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 		return fail(err)
 	}
 
+	// Whiteout the old name before the move, as removeNode does, so that a
+	// failure leaves the merged view as it was.
 	up := ufs.upper()
-	if err := up.Rename(src.path, dp); err != nil {
-		// Layers differ on replacing an existing target (memfs refuses, and
-		// a directory holding whiteouts is not empty to the OS): clear the
-		// writable layer's copy of the target and try again.
-		if dst == nil || !ufs.layerHas(0, dp) {
-			return fail(err)
-		}
-		if err := up.RemoveAll(dp); err != nil {
-			return fail(err)
-		}
-		if err := up.Rename(src.path, dp); err != nil {
+	srcWh := WhiteoutName(src.path)
+	if srcLower {
+		if err := ufs.writeMarker(srcWh); err != nil {
 			return fail(err)
 		}
 	}
-	if err := ufs.dropWhiteout(dp); err != nil {
+	aside, err := ufs.moveUpper(src.path, dp)
+	if err != nil {
+		if srcLower {
+			_ = up.Remove(srcWh)
+		}
 		return fail(err)
 	}
-	if isDir {
-		if dstLower {
-			err = ufs.writeMarker(opaquePath(dp))
-		} else if ufs.layerHas(0, opaquePath(dp)) {
-			err = up.Remove(opaquePath(dp))
-		}
-		if err != nil {
-			return fail(err)
+
+	err = ufs.dropWhiteout(dp)
+	if err == nil && materialized {
+		err = ufs.stripMarkers(dp)
+	}
+	if err == nil && isDir {
+		err = ufs.keepDir(dp, func() error {
+			if dstLower {
+				return ufs.writeMarker(opaquePath(dp))
+			}
+			if ufs.layerHas(0, opaquePath(dp)) {
+				return up.Remove(opaquePath(dp))
+			}
+			return nil
+		})
+	}
+	if aside != "" {
+		if rerr := up.RemoveAll(aside); err == nil {
+			err = rerr
 		}
 	}
-	if srcLower {
-		if err := ufs.ensureUpperDir(src.parent); err != nil {
-			return fail(err)
-		}
-		if err := ufs.writeMarker(WhiteoutName(src.path)); err != nil {
-			return fail(err)
-		}
+	if err != nil {
+		return fail(err)
 	}
 	return nil
 }
@@ -734,7 +780,8 @@ func (ufs *UnionFS) Getwd() (string, error) {
 	return ufs.abs("."), nil
 }
 
-// TempDir returns "/tmp", a path inside the union.
+// TempDir returns "/tmp", a path inside the union. Nothing creates it: a
+// caller that wants to use it should MkdirAll it first.
 func (ufs *UnionFS) TempDir() string {
 	return "/tmp"
 }

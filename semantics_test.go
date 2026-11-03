@@ -140,7 +140,11 @@ func TestWhiteoutHelpers(t *testing.T) {
 		{"/dir/.wh.file.txt", "/dir/file.txt", true},
 		{".wh.c", "c", true},
 		{"a/b/.wh.c", "a/b/c", true},
-		{"/.wh..wh.x", "/.wh.x", true},
+		// Names with the prefix twice are reserved metadata: the OCI and
+		// AUFS opaque marker, and the union's own leftovers.
+		{"/.wh..wh.x", "", false},
+		{"/d/.wh..wh..opq", "", false},
+		{"/d/" + internalPrefix + "7", "", false},
 		{"/dir/file.txt", "", false},
 		{"/dir/.wh.__dir_opaque", "", false},
 		{".wh.", "", false},
@@ -203,9 +207,15 @@ func TestMarkersAreNotNames(t *testing.T) {
 	ufs, upper, lower := newTestUnion(t)
 	put(t, lower, "/.wh.ghost", "") // a stray whiteout in a lower layer
 	put(t, upper, "/"+OpaqueWhiteout+"x", "")
-	for _, p := range []string{"/.wh.ghost", "/" + OpaqueWhiteout, "/.wh.ghost/x"} {
+	mustMkdirAll(t, upper, "/u")
+	put(t, upper, "/u/"+OpaqueWhiteout, "")
+	put(t, upper, "/u/f", "")
+	for _, p := range []string{
+		"/.wh.ghost", "/.wh.ghost/x", "/" + OpaqueWhiteout + "x", "/u/" + OpaqueWhiteout,
+	} {
 		wantNotExist(t, ufs, p)
 	}
+	wantNames(t, list(t, ufs, "/u"), "f")
 	for _, op := range []func() error{
 		func() error { _, err := ufs.Create("/.wh.f"); return err },
 		func() error { return ufs.Mkdir("/.wh.d", 0755) },
@@ -217,7 +227,7 @@ func TestMarkersAreNotNames(t *testing.T) {
 	put(t, ufs, "/f", "x")
 	wantErrIs(t, ufs.Rename("/f", "/.wh.f"), syscall.EPERM)
 	// MkdirAll made /x before it reached the refused name, as mkdir -p does.
-	wantNames(t, list(t, ufs, "/"), "f", "x")
+	wantNames(t, list(t, ufs, "/"), "f", "u", "x")
 }
 
 // --- Remove ---
@@ -298,7 +308,7 @@ func TestRemoveAllMixedLayers(t *testing.T) {
 	}
 	wantNames(t, upperMarkers(t, upper), "/.wh.d")
 
-	// A lower file under an upper-only... is just a file.
+	// RemoveAll of a lower file is a plain whiteout.
 	if err := ufs.RemoveAll("/top"); err != nil {
 		t.Fatal(err)
 	}

@@ -21,6 +21,13 @@ const (
 	// opaque: none of the entries the same directory has in the layers
 	// below show through it.
 	OpaqueWhiteout = ".wh.__dir_opaque"
+
+	// internalPrefix starts the names the union gives entries it is about
+	// to delete or has replaced. Such a name is hidden like a whiteout but
+	// deletes nothing; one is left behind only when a layer fails part way
+	// through deleting it. Names starting with WhiteoutPrefix twice are
+	// reserved for metadata, as in AUFS and OCI image layers.
+	internalPrefix = WhiteoutPrefix + WhiteoutPrefix + "unionfs."
 )
 
 // defaultCopyBufferSize is the copy-up buffer size used unless
@@ -59,6 +66,7 @@ type UnionFS struct {
 	mu             sync.RWMutex
 	cache          *Cache
 	copyBufferSize int
+	asideSeq       uint64 // last suffix asideName used; guarded by mu
 
 	cwdMu sync.RWMutex
 	cwd   string
@@ -135,7 +143,7 @@ func New(opts ...Option) *UnionFS {
 	return ufs
 }
 
-// Name returns the name of the filesystem
+// Name returns "UnionFS".
 func (ufs *UnionFS) Name() string {
 	return "UnionFS"
 }
@@ -150,24 +158,26 @@ func cleanPath(p string) string {
 	return cleaned
 }
 
-// InvalidateCache removes a path from the cache
+// InvalidateCache drops the cached Stat result, or cached miss, for path.
+// Use it after changing a layer directly rather than through the union.
 func (ufs *UnionFS) InvalidateCache(path string) {
 	path = cleanPath(path)
 	ufs.cache.invalidate(path)
 }
 
-// InvalidateCacheTree removes all cache entries under a path prefix
+// InvalidateCacheTree drops every cached entry whose path starts with
+// pathPrefix.
 func (ufs *UnionFS) InvalidateCacheTree(pathPrefix string) {
 	pathPrefix = cleanPath(pathPrefix)
 	ufs.cache.invalidateTree(pathPrefix)
 }
 
-// ClearCache removes all cache entries
+// ClearCache drops every cached entry.
 func (ufs *UnionFS) ClearCache() {
 	ufs.cache.clear()
 }
 
-// CacheStats returns cache statistics
+// CacheStats reports the Stat cache's configuration and size.
 func (ufs *UnionFS) CacheStats() CacheStats {
 	return ufs.cache.Stats()
 }

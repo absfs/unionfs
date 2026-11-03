@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -332,17 +333,70 @@ func TestRemoveFailures(t *testing.T) {
 	wantInjected(t, "listing a directory to remove", ufs.Remove("/d/sub"))
 	upper.clear()
 
-	upper.failOn("remove", "/d/sub/.wh.c")
-	wantInjected(t, "clearing whiteouts", ufs.Remove("/d/sub"))
+	// The directory is moved aside before it is deleted; when that fails
+	// the whiteout written for it is taken back.
+	upper.failOn("rename", "/d/sub")
+	wantInjected(t, "moving the directory aside", ufs.Remove("/d/sub"))
+	upper.clear()
+	wantNames(t, upperMarkers(t, upper), "/d/.wh.a", "/d/.wh.b", "/d/sub/.wh.c")
+	wantNames(t, list(t, ufs, "/d/sub"))
+
+	upper.failOn("lstat", "/d/"+internalPrefix+"2")
+	wantInjected(t, "naming the aside copy", ufs.Remove("/d/sub"))
 	upper.clear()
 
-	upper.failOn("remove", "/d/sub")
-	wantInjected(t, "removing the upper directory", ufs.Remove("/d/sub"))
-	upper.clear()
-
-	upper.failOn("removeall", "/d")
+	upper.failOn("rename", "/d")
 	wantInjected(t, "RemoveAll of the upper copy", ufs.RemoveAll("/d"))
 	upper.clear()
+
+	// Deleting the aside copy fails: the directory is gone from the merged
+	// view, and the leftover hides nothing.
+	upper.failOn("removeall", "*")
+	wantInjected(t, "deleting the aside copy", ufs.Remove("/d/sub"))
+	upper.clear()
+	wantNotExist(t, ufs, "/d/sub")
+	wantNames(t, list(t, ufs, "/d"))
+	ents, err := upper.ReadDir("/d")
+	must(t, err)
+	var leftovers int
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), internalPrefix) {
+			leftovers++
+			if _, ok := WhiteoutTarget(e.Name()); ok {
+				t.Fatalf("leftover %s reads as a whiteout", e.Name())
+			}
+		}
+	}
+	if leftovers != 1 {
+		t.Fatalf("leftovers = %d, want 1", leftovers)
+	}
+	// Removing the parent clears the leftover with the other markers.
+	must(t, ufs.Remove("/d"))
+	wantNames(t, upperMarkers(t, upper), "/.wh.d")
+
+	// A directory only the writable layer has: its stray markers go first.
+	ufs, upper, _ = faultUnion(t)
+	must(t, ufs.Mkdir("/u", 0755))
+	put(t, upper, "/u/.wh.stray", "")
+	upper.failOn("removeall", "/u/.wh.stray")
+	wantInjected(t, "clearing stray markers", ufs.Remove("/u"))
+	upper.clear()
+	upper.failOn("remove", "/u")
+	wantInjected(t, "removing the upper directory", ufs.Remove("/u"))
+	upper.clear()
+	must(t, ufs.Remove("/u"))
+	wantNames(t, upperMarkers(t, upper))
+
+	// A modified lower file: the whiteout is taken back when the upper copy
+	// cannot be deleted.
+	put(t, ufs, "/top", "edited")
+	upper.failOn("remove", "/top")
+	wantInjected(t, "removing the upper copy", ufs.Remove("/top"))
+	upper.clear()
+	if get(t, ufs, "/top") != "edited" {
+		t.Fatal("upper copy lost")
+	}
+	wantNames(t, upperMarkers(t, upper))
 
 	upper.failOn("readdir", "/")
 	wantInjected(t, "RemoveAll of the root", ufs.RemoveAll("/"))
@@ -386,8 +440,13 @@ func TestRenameFailures(t *testing.T) {
 
 	ufs, upper, _ = faultUnion(t)
 	must(t, ufs.Remove("/d/a"))
-	upper.failOn("remove", "/d/.wh.a")
+	upper.failOn("removeall", "/e/.wh.a")
 	wantInjected(t, "stripping markers", ufs.Rename("/d", "/e"))
+	upper.clear()
+	ufs, upper, _ = faultUnion(t)
+	must(t, ufs.Remove("/d/a"))
+	upper.failOn("readdir", "/e/sub")
+	wantInjected(t, "listing markers to strip", ufs.Rename("/d", "/e"))
 	upper.clear()
 
 	// The destination directory cannot be copied up.
@@ -397,13 +456,49 @@ func TestRenameFailures(t *testing.T) {
 	wantInjected(t, "destination parent", ufs.Rename("/f", "/d/f"))
 	upper.clear()
 
-	// The move itself, with and without a target to clear.
+	// The move itself fails: with a target in the upper, the target is
+	// moved aside, the move retried, and the target put back.
 	upper.failOn("rename", "/f")
 	wantInjected(t, "rename", ufs.Rename("/f", "/g"))
 	put(t, ufs, "/g", "g")
-	upper.failOn("removeall", "/g")
-	wantInjected(t, "clearing the target", ufs.Rename("/f", "/g"))
+	wantInjected(t, "rename over a target", ufs.Rename("/f", "/g"))
+	if get(t, ufs, "/g") != "g" || get(t, ufs, "/f") != "f" {
+		t.Fatal("a failed rename must leave source and target alone")
+	}
+	upper.failOn("rename", "/g")
+	wantInjected(t, "moving the target aside", ufs.Rename("/f", "/g"))
 	upper.clear()
+	upper.failOn("rename", "/f")
+	upper.failOn("lstat", "/"+internalPrefix+"3")
+	wantInjected(t, "naming the target's aside copy", ufs.Rename("/f", "/g"))
+	upper.clear()
+	if get(t, ufs, "/g") != "g" {
+		t.Fatal("target lost")
+	}
+	wantNames(t, list(t, ufs, "/"), "d", "f", "g", "top")
+
+	// memfs refuses to replace, so this move always goes through the aside
+	// copy; deleting it afterwards fails, and is reported, but the move
+	// stands and the leftover is hidden.
+	upper.failOn("removeall", "*")
+	wantInjected(t, "deleting the replaced target", ufs.Rename("/f", "/g"))
+	upper.clear()
+	if get(t, ufs, "/g") != "f" {
+		t.Fatal("the move must stand")
+	}
+	wantNames(t, list(t, ufs, "/"), "d", "g", "top")
+
+	// A lower source: its whiteout is written before the move and taken
+	// back when the move fails.
+	ufs, upper, _ = faultUnion(t)
+	upper.failOn("rename", "/top")
+	wantInjected(t, "rename of a lower file", ufs.Rename("/top", "/top2"))
+	upper.clear()
+	wantNames(t, upperMarkers(t, upper))
+	if get(t, ufs, "/top") != "lt" {
+		t.Fatal("source lost")
+	}
+	wantNotExist(t, ufs, "/top2")
 
 	// Markers after the move.
 	ufs, upper, _ = faultUnion(t)
@@ -433,17 +528,22 @@ func TestRenameFailures(t *testing.T) {
 	upper.clear()
 }
 
-func TestRenameRetryClearsUpperTarget(t *testing.T) {
+func TestRenameFailureKeepsTarget(t *testing.T) {
 	ufs, upper, _ := faultUnion(t)
 	put(t, ufs, "/a", "A")
 	put(t, ufs, "/b", "B")
 	upper.failOn("rename", "/a")
 	wantInjected(t, "rename", ufs.Rename("/a", "/b"))
 	upper.clear()
+	if get(t, ufs, "/b") != "B" {
+		t.Fatal("a failed rename deleted its target")
+	}
 	must(t, ufs.Rename("/a", "/b"))
 	if get(t, ufs, "/b") != "A" {
 		t.Fatal("contents")
 	}
+	wantNames(t, list(t, ufs, "/"), "b", "d", "top")
+	wantNames(t, upperMarkers(t, upper))
 }
 
 func TestLayersWithoutOptionalMethods(t *testing.T) {
@@ -507,5 +607,58 @@ func TestCopyUpOfSpecialFileIsRefused(t *testing.T) {
 	ufs := New(WithWritableLayer(upper), WithReadOnlyLayer(pipeFS{lower}))
 	if err := ufs.Chmod("/pipe", 0600); !errors.Is(err, syscall.ENOTSUP) {
 		t.Fatalf("copy-up of a named pipe: %v", err)
+	}
+}
+
+// TestTruncatingCopyUpReadsNothing checks that copying a file up to
+// truncate it to zero never reads the lower copy, while any other copy-up
+// does.
+func TestTruncatingCopyUpReadsNothing(t *testing.T) {
+	ufs, upper, lower := faultUnion(t)
+	lower.failOn("open", "*")
+	lower.failOn("openfile", "*")
+
+	f, err := ufs.OpenFile("/d/a", os.O_WRONLY|os.O_TRUNC, 0)
+	must(t, err)
+	must(t, f.Close())
+	must(t, ufs.Truncate("/d/b", 0))
+	wantInjected(t, "Truncate to a non-zero size", ufs.Truncate("/top", 1))
+	_, err = ufs.OpenFile("/d/sub/c", os.O_WRONLY, 0)
+	wantInjected(t, "OpenFile without O_TRUNC", err)
+	lower.clear()
+
+	for _, p := range []string{"/d/a", "/d/b"} {
+		if get(t, ufs, p) != "" {
+			t.Fatalf("%s not empty", p)
+		}
+		if !exists(upper, p) {
+			t.Fatalf("%s not copied up", p)
+		}
+	}
+}
+
+// TestCreateFlagAloneCopiesNothing opens an existing lower file with
+// O_RDONLY|O_CREATE: that is a read, and must not copy the file up.
+func TestCreateFlagAloneCopiesNothing(t *testing.T) {
+	ufs, upper, _ := faultUnion(t)
+	f, err := ufs.OpenFile("/d/a", os.O_RDONLY|os.O_CREATE, 0644)
+	must(t, err)
+	buf := make([]byte, 8)
+	n, _ := f.Read(buf)
+	must(t, f.Close())
+	if string(buf[:n]) != "la" {
+		t.Fatalf("read %q", buf[:n])
+	}
+	if exists(upper, "/d/a") || exists(upper, "/d") {
+		t.Fatal("O_RDONLY|O_CREATE copied the file up")
+	}
+	_, err = ufs.OpenFile("/d", os.O_RDONLY|os.O_CREATE, 0755)
+	wantErrIs(t, err, syscall.EISDIR)
+	// A missing file is still created.
+	f, err = ufs.OpenFile("/d/new", os.O_RDONLY|os.O_CREATE, 0644)
+	must(t, err)
+	must(t, f.Close())
+	if !exists(upper, "/d/new") {
+		t.Fatal("O_RDONLY|O_CREATE did not create a missing file")
 	}
 }
