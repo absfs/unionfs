@@ -159,13 +159,13 @@ All changes land in the writable layer. Whiteouts use the `.wh.<name>`
 naming of AUFS and OCI/Docker image layers; the opaque marker does not (see
 below). The format, exactly:
 
-| On disk in the writable layer                    | Meaning                                                                                   |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------- |
-| `dir/.wh.<name>`, an empty regular file          | `dir/<name>` was deleted, with everything under it                                        |
-| `dir/.wh.__dir_opaque`, an empty regular file    | `dir` replaced the lower `dir`: none of the lower entries show                            |
-| `dir/.wh..wh.meta.<name>`, an empty regular file | only the mode, times or owner of the lower file `dir/<name>` changed: to the marker's own |
-| any other file, link or directory                | created, modified, or copied up because its metadata changed                              |
-| `dir/.wh..wh.unionfs.<n>`, a file or directory   | nothing: a leftover from a failed operation, safe to delete                               |
+| On disk in the writable layer                    | Meaning                                                                                                                    |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `dir/.wh.<name>`, an empty regular file          | `dir/<name>` was deleted, with everything under it                                                                         |
+| `dir/.wh.__dir_opaque`, an empty regular file    | `dir` replaced the lower `dir`: none of the lower entries show                                                             |
+| `dir/.wh..wh.meta.<name>`, an empty regular file | only the mode, times or owner of the lower file `dir/<name>` changed: to the marker's own                                  |
+| any other file, link or directory                | created, modified, or copied up because a directory's or link's metadata changed, or because a file was opened for writing |
+| `dir/.wh..wh.unionfs.<n>`, a file or directory   | nothing: a leftover from a failed operation, safe to delete                                                                |
 
 `WhiteoutPrefix` is `".wh."` and `OpaqueWhiteout` is `".wh.__dir_opaque"`.
 A whiteout and an entry of the same name never coexist in the writable
@@ -191,8 +191,9 @@ modification time and owner are the file's new metadata. There is no
 `dir/<name>` in the upper. Through the union, `Stat`, `Lstat`, `ReadDir`
 and an open handle's `Stat` report the lower file's size, contents and type
 with the marker's mode, mtime and owner; `FileInfo.Sys()` carries the
-marker's owner where both layers report one (a host `*syscall.Stat_t`, a
-memfs `*inode.Inode`). Reads come from the lower.
+marker's mode, owner, modification time and change time where both layers
+report one (a host `*syscall.Stat_t`, a memfs `*inode.Inode`); its access
+time stays the lower file's. Reads come from the lower.
 
 - Further metadata changes update the same marker.
 - The first open with a write flag (`O_WRONLY`, `O_RDWR`, `O_APPEND`,
@@ -204,6 +205,9 @@ memfs `*inode.Inode`). Reads come from the lower.
 - If the lower file changes underneath, the marker still applies to it.
 - Directories and symbolic links are copied up as before: copying them
   costs no data.
+- A file whose name is longer than 242 bytes is copied up as before too:
+  its marker's name would pass the 255-byte limit hosts put on a name. So
+  is a file whose marker the writable layer refuses as too long.
 - A marker in a read-only layer applies to the layers below it, so a
   captured upper can be stacked as a lower.
 
@@ -233,7 +237,10 @@ to create such names, so only a lower can have one. Two ways out:
   layer. In read-only layers `.wh.` names are ordinary entries: they show,
   can be read, listed and looked up, but cannot be changed, removed,
   renamed or created under (EPERM), because the writable layer has no way
-  to represent them. Removing a directory that holds them works. The cost
+  to represent them. Renaming a directory that holds them, at any depth,
+  fails with EPERM too, since its copied-up tree could not hold them; such
+  a directory can be removed only with `RemoveAll`, since `Remove` cannot
+  empty it. The cost
   is that read-only layers can no longer carry whiteouts, opaque markers
   or metadata markers, so captured uppers cannot be stacked.
 

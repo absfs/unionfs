@@ -110,8 +110,9 @@ func WithReadOnlyLayer(fs absfs.FileSystem) Option {
 }
 
 // WithStatCache enables a cache of Stat and Lstat results with the given
-// TTL; misses are cached for half as long. See WithCacheConfig, and
-// WithLookupCache for a cache that never serves stale attributes.
+// TTL; misses are cached for half as long. It holds at most 1000 results
+// and 1000 misses. See WithCacheConfig, and WithLookupCache for a cache that
+// never serves stale attributes.
 func WithStatCache(enabled bool, ttl time.Duration) Option {
 	return func(ufs *UnionFS) {
 		ufs.cache = newCache(enabled, ttl, ttl/2, 1000)
@@ -120,6 +121,12 @@ func WithStatCache(enabled bool, ttl time.Duration) Option {
 
 // WithCacheConfig enables a cache of Stat and Lstat results with separate
 // TTLs for found and missing paths and a bound on entries per kind.
+//
+// A full cache evicts its oldest entry of the kind it stores, in constant
+// time. Stat and Lstat results share the bound. A working set of paths
+// larger than maxEntries, looked up in turn, misses on every call and
+// costs about what no cache does; give such a workload a larger bound, or
+// WithLookupCache, whose default bound is 100000 names.
 //
 // Changes made through the union drop the cached entries at and under the
 // paths they touch. Changes made to a layer directly, writes through an open
@@ -168,7 +175,10 @@ func WithLookupCache(ttl time.Duration, maxEntries int) Option {
 // are ordinary entries: a lower file or directory named ".wh.x" shows in the
 // merged view, and can be read, listed and looked up, though not changed,
 // removed or renamed, nor anything created inside it (EPERM), since the
-// writable layer could not represent the result.
+// writable layer could not represent the result. Renaming a directory that
+// holds such an entry, at any depth, fails with EPERM too, since its
+// copied-up tree could not hold it; such a directory can be removed with
+// RemoveAll, but not with Remove, which cannot empty it.
 //
 // By default markers count in every layer, as in AUFS and OCI image
 // layers, so that a writable layer captured from one union can be stacked

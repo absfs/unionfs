@@ -98,8 +98,10 @@ package's own:
     name's; name's contents, size and type are the lower file's. There is
     no entry name in the same layer. Stat, Lstat, ReadDir and a handle
     opened for reading report the marker's metadata, and a FileInfo's Sys
-    value carries the marker's owner where both layers report one (host
-    directories, memfs). Removing name deletes the marker with it; the
+    value carries the marker's owner, mode and modification and change
+    times where both layers report one (host directories, memfs). A file
+    whose name is longer than 242 bytes is copied up instead, since its
+    marker's name would pass the hosts' 255-byte limit. Removing name deletes the marker with it; the
     first copy-up of name gives the copy the marker's metadata and deletes
     the marker. A marker in a read-only layer applies in the same way to
     the layers below it, so a captured upper can be stacked as a lower.

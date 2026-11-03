@@ -82,6 +82,21 @@ made to a layer directly show once the entries expire, or after
 path the direct change created or removed: a directory added to the upper
 also changes where every name under it is found).
 
+A Stat cache holds at most `maxEntries` results (1000 with
+`WithStatCache`), and `Stat` and `Lstat` results share that bound. A
+working set larger than the bound, looked up in turn, misses on every call.
+`BenchmarkLstatWorkingSet` cycles `Lstat` over 5000 lower files in one
+osfs directory (ns/op):
+
+| No cache | Stat cache, before | Stat cache | Lookup cache |
+| -------- | ------------------ | ---------- | ------------ |
+| 7,400    | 18,700             | 7,500      | 2,200        |
+
+"Before" is the eviction this release replaced, which scanned the whole
+cache for its oldest entry on every insert once the cache was full; a
+full cache now evicts in constant time, so a working set that does not fit
+costs what no cache does. The lookup cache's default bound is 100000 names.
+
 ### Cache Performance
 
 Negative lookups (non-existent files), from the table above:
@@ -481,14 +496,20 @@ ufs := unionfs.New(
 
 **Solution**: Always enable caching
 
-### ❌ Anti-Pattern 3: Frequent CoW of Large Files
+### ❌ Anti-Pattern 3: Opening Large Lower Files for Writing
 
 ```go
-// BAD: copies the whole 100MB file up just to change its mode
-ufs.Chmod("/huge-database.db", 0600)
+// BAD: copies the whole 100MB file up, though nothing is written
+f, _ := ufs.OpenFile("/huge-database.db", os.O_RDWR, 0)
 ```
 
-**Solution**: Pre-copy to writable layer or avoid modifications
+Opening a file only a lower layer has for writing (`O_WRONLY`, `O_RDWR`
+or `O_APPEND`, even with no write after it), truncating it to a non-zero
+size, or renaming it copies the whole file up. `Chmod`, `Chown` and
+`Chtimes` do not: they write an empty metadata marker.
+
+**Solution**: Open for reading (`O_RDONLY`) unless you will write, and
+pre-copy files you will modify often to the writable layer
 
 ### ❌ Anti-Pattern 4: Single Large Directory
 
@@ -510,9 +531,13 @@ for i := 0; i < 10000; i++ {
 **Symptoms**: High latency on `Stat()` calls
 
 **Solutions**:
-1. Enable caching: `WithStatCache(true, 5*time.Minute)`
-2. Reduce layer count
-3. Move frequently accessed files to upper layers
+1. Enable caching: `WithLookupCache(time.Hour, 0)` or
+   `WithStatCache(true, 5*time.Minute)`
+2. If the paths looked up outnumber the Stat cache's bound, raise it with
+   `WithCacheConfig` or use the lookup cache: a working set that does not
+   fit misses every time
+3. Reduce layer count
+4. Move frequently accessed files to upper layers
 
 ### Problem: High Memory Usage
 
@@ -525,8 +550,9 @@ for i := 0; i < 10000; i++ {
 
 ### Problem: Stale Data
 
-**Symptoms**: Stale `Stat` results (size, mode, modification time or
-existence). The cache holds `Stat` results only, never file contents.
+**Symptoms**: Stale `Stat` or `Lstat` results (size, mode, modification
+time or existence). The cache holds `Stat` and `Lstat` results only, never
+file contents.
 
 **Solutions**:
 1. Reduce cache TTL

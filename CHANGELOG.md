@@ -83,6 +83,11 @@ match POSIX, and callers relying on the old ones should read
   nothing and returns nil when `mtime` is zero or equals the lower entry's
   current modification time. Any other `mtime` copies up as before, and an
   entry the writable layer has still gets both times.
+- A full Stat cache scanned every entry to find the oldest on each insert,
+  so a working set larger than its bound (1000 with `WithStatCache`) made
+  each lookup slower than no cache: 18.7 µs instead of 7.4 µs for an
+  `Lstat` cycling over 5000 host files. It now evicts the oldest entry in
+  constant time, and storing a path it already holds evicts nothing.
 - `Chtimes` with a zero `mtime` on an entry the writable layer has passed
   the zero `Time` on, and a memfs writable layer stored it, giving the
   file a modification time in 1754. A zero `mtime` now leaves the
@@ -101,8 +106,10 @@ match POSIX, and callers relying on the old ones should read
   data. They create or update an empty `.wh..wh.meta.<name>` file beside
   it in the writable layer whose own permission bits, modification time
   and owner are the file's; `Stat`, `Lstat`, `ReadDir` and open handles
-  report them, and `FileInfo.Sys()` carries the owner on host and memfs
-  layers. The first open for writing, `Truncate` or `Rename` copies the
+  report them, and `FileInfo.Sys()` carries the owner, mode and
+  modification and change times on host and memfs layers. A file whose
+  name is longer than 242 bytes is copied up as before, since its marker's
+  name would pass the hosts' 255-byte limit. The first open for writing, `Truncate` or `Rename` copies the
   data up with that metadata and removes the marker; `Remove` deletes it
   with the whiteout. A `chmod +x` of a large file, or git freshening a
   lower pack with its times, no longer copies it. `MetaPrefix`,
@@ -113,12 +120,13 @@ match POSIX, and callers relying on the old ones should read
   holds each name, which markers apply, which names are missing) but not
   attributes, so it stays exact under writes through open handles. A
   repeated `Lstat` costs one layer call instead of one or more per path
-  element: through host directories, 1.5 to 1.8 µs instead of 6.3 to
+  element: through host directories, 1.6 to 1.8 µs instead of 6.3 to
   9.3 µs. Every change through the union drops the entries it affects;
   `CacheStats` reports its size. See PERFORMANCE.md.
 - The Stat cache (`WithStatCache`, `WithCacheConfig`) holds `Lstat`
   results and misses too; before, it covered only `Stat`.
-- `BenchmarkLstat`, and a test that counts the layer calls of an `Lstat`.
+- `BenchmarkLstat`, `BenchmarkLstatWorkingSet`, and a test that counts the
+  layer calls of an `Lstat`.
 - `ReservedNames(fs, root)` lists the names starting with `.wh.` in a
   tree, which a union takes for markers in any layer, so a consumer can
   detect a lower it cannot represent.
