@@ -6,6 +6,9 @@ All notable changes to the UnionFS project will be documented in this file.
 
 Fixes found running a union per workspace under C4's NFS workspace
 prototype, and an audit of the same kind of bug across the package.
+Intended as v1.1.0: the API only grows, but several behaviours change to
+match POSIX, and callers relying on the old ones should read
+[Changed](#changed) first.
 
 ### Fixed
 
@@ -34,8 +37,7 @@ prototype, and an audit of the same kind of bug across the package.
   and `EBUSY` as rename(2) does.
 - `RemoveAll` of a directory both layers had deleted only the upper copy,
   and the lower one showed through again. It now deletes the upper copy and
-  writes one whiteout whenever a lower layer has the name. `RemoveAll` of a
-  missing path returns nil, like `os.RemoveAll`.
+  writes one whiteout whenever a lower layer has the name.
 - Symbolic links were followed inside a single layer, so an upper link to
   a lower-only file did not resolve; they are now resolved against the
   union. Copy-up of a lower link (by `Rename` or `Lchown`) turned it into a
@@ -43,37 +45,69 @@ prototype, and an audit of the same kind of bug across the package.
   links.
 - `Chmod` on a directory dropped its directory bit on layers that store the
   mode verbatim (memfs). Copy-up kept no mode on directories created for a
-  parent path; parents are now copied up with their mode and times.
+  parent path; parents are now copied up with their mode and times, and
+  copying an entry up into a directory no longer changes that directory's
+  modification time, so a metadata-only change to a lower file does not
+  make its directory look modified in a changeset.
+- Copying up below a read-only lower directory (0555) works, as the change
+  does on a host: the union grants itself write permission on the
+  copied-up directory just while it copies the entry in, then restores the
+  lower mode.
+- A failed `Rename` could delete its target: when the move failed for any
+  reason and the target was in the writable layer, the target was removed
+  and the move retried. The target is now renamed aside and put back if
+  the retry fails too.
+- A failure part way through `Remove`, `RemoveAll` or `Rename` could bring
+  deleted lower entries back (the markers inside a directory were deleted
+  before the directory, and the whiteout for a modified lower file written
+  after its upper copy was gone). Whiteouts are now written first and
+  taken back on failure, a directory is renamed aside before it is deleted,
+  and a moved directory's markers are removed only after the move.
+- `Mkdir` and `MkdirAll` through a symbolic link to the parent left a
+  cached miss for the caller's path in place.
 - Opening a file with `O_TRUNC` copied its contents up only to discard
-  them; `Truncate(0)` likewise.
-- `Create` and `Mkdir` created missing parent directories silently; they
-  now fail with `ENOENT`, as on any other filesystem. Opening a directory
-  for writing fails with `EISDIR`; `Readlink` of a non-link fails with
-  `EINVAL` (memfs returned an empty target).
-- Names starting with `.wh.` are refused (`EPERM`) and never resolve, so a
-  marker file can no longer be read, listed or created as a regular file.
+  them; `Truncate(0)` likewise. Neither reads the lower copy now.
 - Relative names were always taken from `/`; views returned by
   `FileSystem()` lost their working directory for `RemoveAll`, `Truncate`,
   `ReadDir`, `ReadFile` and `Sub`.
-- A failing layer read as a missing file in listings and whiteout checks,
-  which could show a lower file as deleted or a deleted one as present.
-  Layer errors other than "not found" are now reported.
-- `ReadDir` sorted case-insensitively; it now sorts by name, as
-  `absfs.Filer` specifies.
 
 ### Added
 
 - `*UnionFS` implements `absfs.SymlinkFileSystem` directly, adding
   `Chdir`, `Getwd`, `TempDir` and `Truncate`.
 - `IsWhiteout`, `IsOpaqueMarker`, `WhiteoutTarget` and `WhiteoutName`, to
-  recognise marker files and map a whiteout to the name it deletes.
+  recognise marker files and map a whiteout to the name it deletes. Names
+  starting with `.wh..wh.` are reserved metadata, as in AUFS and OCI:
+  `WhiteoutTarget` returns false for them.
 - The README documents the whiteout format exactly and how to read a
   writable layer as a changeset.
 - Tests over host directories (basefs over osfs), fault injection, a
   concurrent workload under the race detector, and runnable examples.
-  Statement coverage is 96%.
+  Statement coverage of the package is 97%.
 
 ### Changed
+
+These may affect existing callers:
+
+- `Create`, `OpenFile` with `O_CREATE`, and `Mkdir` with a missing parent
+  directory fail with `ENOENT`, as on any other filesystem; v1.0.0 created
+  the parents silently. Use `MkdirAll` first.
+- `RemoveAll` of a missing path returns nil, like `os.RemoveAll`.
+- `ReadDir` sorts by name (byte order), as `absfs.Filer` specifies; v1.0.0
+  sorted case-insensitively.
+- Layer errors other than "not found" are reported. v1.0.0 read a failing
+  layer as a missing file in listings and whiteout checks, which could show
+  a lower file as deleted or a deleted one as present.
+- Names starting with `.wh.` are refused (`EPERM`) and never resolve, so a
+  marker file can no longer be read, listed or created as a regular file.
+- Opening a directory for writing fails with `EISDIR`; `Readlink` of a
+  non-link fails with `EINVAL` (memfs returned an empty target).
+- `OpenFile` of an existing file with `O_CREATE` but no write flag is a
+  read: it no longer copies the file up.
+- A zero TTL in `WithStatCache` or `WithCacheConfig` never serves a cached
+  entry; before, one could be served within the same clock tick.
+
+Internal:
 
 - Operations that change the union hold an exclusive lock for their
   metadata work, so concurrent changes no longer interleave half-done
@@ -84,7 +118,8 @@ prototype, and an audit of the same kind of bug across the package.
 ### Unchanged
 
 - The on-disk format: `.wh.<name>` whiteout files and the
-  `.wh.__dir_opaque` marker, both empty regular files.
+  `.wh.__dir_opaque` marker, both empty regular files. The opaque marker is
+  not the `.wh..wh..opq` that AUFS and OCI image layers use.
 
 ## [1.0.0] - 2025-12-12
 

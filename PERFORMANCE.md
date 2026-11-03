@@ -49,9 +49,9 @@ Measured on memfs layers (Apple M-series, `go test -bench . -benchtime
 
 ### Cache Performance
 
-Negative lookups (non-existent files):
-- **Without cache**: ~900-1100 ns
-- **With cache**: ~130-160 ns (**~7x faster**)
+Negative lookups (non-existent files), from the table above:
+- **Without cache**: ~510 ns
+- **With cache**: ~75 ns (**~7x faster**)
 
 **Recommendation**: Always enable caching for production workloads.
 
@@ -170,9 +170,12 @@ A file is copied up the first time it is opened for writing, truncated,
 or has its mode, owner or times changed: its contents (unless the open
 truncates it, or Truncate cuts it to zero), mode and modification time.
 Its directory, and the directories above it, are copied up first, as empty
-directories with their modes and times. Renaming a directory that lower
-layers contribute to copies its whole merged tree up, so it costs time
-proportional to the tree.
+directories with their modes and times. Each entry copied into a
+directory costs one `Lstat` and one `Chtimes` of that directory (two
+`Chmod`s more when it is read-only), so that the copy-up leaves the
+directory's mode and modification time as they were. Renaming a directory
+that lower layers contribute to copies its whole merged tree up, so it
+costs time proportional to the tree.
 
 ### Minimizing CoW Overhead
 
@@ -285,8 +288,8 @@ go func() {
         log.Printf("UnionFS cache: %d entries, TTL=%v",
             stats.StatCacheSize, stats.StatTTL)
 
-        if stats.StatCacheSize > stats.MaxEntries*0.9 {
-            log.Warn("Cache approaching capacity")
+        if stats.StatCacheSize > stats.MaxEntries*9/10 {
+            log.Printf("UnionFS cache approaching capacity")
         }
     }
 }()

@@ -22,8 +22,8 @@ ufs := unionfs.New(
 Give many users their own writable copy of one large tree without copying
 it. Reads fall through to the shared lower layer; the first write to a file
 copies just that file up; a delete leaves a small marker. The upper layer
-ends up holding exactly what changed, in the AUFS/Docker whiteout format, so
-it can be read back as a changeset.
+ends up holding exactly what changed, marked with AUFS-style `.wh.<name>`
+whiteouts, so it can be read back as a changeset.
 
 The motivating case is [C4](https://github.com/Avalanche-io/c4)'s
 workspace prototype: one NFSv3 export, served by
@@ -117,11 +117,19 @@ More, compiled and checked by `go test`, in
 - **Copy-up on every kind of change:** opening for write, `Truncate`,
   `Chmod`, `Chown`, `Lchown`, `Chtimes`. Mode and modification time are
   kept; links are copied as links; `O_TRUNC` and `Truncate(0)` skip the
-  contents.
+  contents; `O_CREATE` on an existing file without a write flag is a read
+  and copies nothing. Copying up does not change the directories it
+  passes through: their mode and modification time stay as the lower's,
+  and a read-only lower ancestor (0555) does not stop a change to a file
+  below it, just as on a host.
 - **Deletes that leave no trace when they can.** `Remove` and `RemoveAll`
   write a whiteout only when a lower layer still has the name. A directory
   removes when its merged view is empty, and takes its whiteouts with it.
   `RemoveAll` of a lower tree writes one whiteout.
+- **Failures do not resurrect deleted files.** Whiteouts are written before
+  the upper entry goes and taken back if it cannot; a directory is renamed
+  aside before it is deleted; a `Rename` never deletes its target before
+  the move has succeeded.
 - **Recreating a deleted directory makes it opaque,** so the old lower
   entries do not come back.
 - **POSIX `Rename`.** Files, links and directories, from either layer, over
@@ -135,8 +143,9 @@ More, compiled and checked by `go test`, in
 
 ## The upper layer as a changeset
 
-All changes land in the writable layer, in the AUFS format Docker image
-layers use. The format, exactly:
+All changes land in the writable layer. Whiteouts use the `.wh.<name>`
+naming of AUFS and OCI/Docker image layers; the opaque marker does not (see
+below). The format, exactly:
 
 | On disk in the writable layer                 | Meaning                                                        |
 | --------------------------------------------- | -------------------------------------------------------------- |
@@ -144,10 +153,25 @@ layers use. The format, exactly:
 | `dir/.wh.__dir_opaque`, an empty regular file | `dir` replaced the lower `dir`: none of the lower entries show |
 | any other file, link or directory             | created, modified, or copied up because its metadata changed   |
 
+| `dir/.wh..wh.unionfs.<n>`, a file or directory | nothing: a leftover from a failed operation, safe to delete     |
+
 `WhiteoutPrefix` is `".wh."` and `OpaqueWhiteout` is `".wh.__dir_opaque"`.
 A whiteout and an entry of the same name never coexist in the writable
-layer. Marker files never show in the merged view, and the union refuses to
-create a name starting with `.wh.` (EPERM).
+layer once an operation has finished. Marker files never show in the
+merged view, and the union refuses to create a name starting with `.wh.`
+(EPERM).
+
+Names starting with `.wh..wh.` are reserved for metadata, as in AUFS and
+OCI: they are hidden but delete nothing, and `WhiteoutTarget` returns false
+for them. The union uses `.wh..wh.unionfs.<n>` for an entry it is about to
+delete; one is left behind only when a layer fails part way through
+deleting it.
+
+**The opaque marker differs from OCI and AUFS.** Their opaque marker is
+`.wh..wh..opq`; this package's is `.wh.__dir_opaque`, unchanged since
+v1.0.0. An extracted OCI layer used as a unionfs layer therefore has its
+opaque directories merged rather than replaced, and a tool converting
+between the two must rename the marker.
 
 So reading an upper as a changeset against its lower is a walk:
 
@@ -162,6 +186,8 @@ walk = func(dir string) {
             replaceDir(dir) // drop every lower entry under dir; the upper's entries are the whole contents
         case isWhiteout:
             remove(deleted) // deleted, with everything under it
+        case unionfs.IsWhiteout(p):
+            // reserved .wh..wh. name: a leftover, not part of the changeset
         case e.IsDir():
             walk(p)         // a directory may also be new: add it if the lower lacks it
         default:
@@ -210,8 +236,11 @@ change fails with `ErrNoWritableLayer`.
 
 - **Ownership is not copied up,** only mode and modification time.
 - **Copy-up runs with the union's own permissions.** A lower directory
-  that its owner cannot write is copied up with that mode, and creating
-  files in it then fails on a host filesystem, as it would anyway.
+  that its owner cannot write is copied up with that mode. Changing a file
+  inside or below it works, as on a host, because the union grants itself
+  write permission on the copied-up directory just while it copies an
+  entry up. Creating, removing or renaming an entry directly inside it
+  fails with EACCES on a host filesystem, as it would on the host.
 - **Special files** (devices, pipes, sockets) cannot be copied up
   (ENOTSUP). **Hard links** are not tracked across layers.
 - **Renaming a large lower directory copies the whole tree** into the
@@ -220,10 +249,16 @@ change fails with `ErrNoWritableLayer`.
   lower keeps reading the lower copy after another handle writes it.
 - **Not atomic against layer failures:** a change that fails part way (a
   full disk) can leave a completed copy-up behind, never a half-written
-  file.
-- **The Stat cache** is dropped for paths changed through the union, but
-  not for changes made to a layer directly, or seen through a symbolic link,
-  until the entry expires.
+  file, and never brings back a deleted entry. A deletion whose last step
+  fails can leave a hidden `.wh..wh.unionfs.<n>` leftover, and reports the
+  error.
+- **Paths are normalised lexically.** A trailing slash is dropped
+  (`Stat("/file/")` succeeds on a regular file) and an empty name means the
+  working directory, unlike `os.Stat`.
+- **The Stat cache** is dropped for paths changed through the union, by
+  the path the caller gave and the path it resolved to, but not for changes
+  made to a layer directly, or seen through another symbolic link, until
+  the entry expires.
 - **Locking:** changes take an exclusive lock for their metadata work
   (including a copy-up), lookups share a read lock; file I/O through open
   handles takes none.
@@ -255,12 +290,16 @@ ufs := unionfs.New(
 
 ```sh
 go test -race ./...
+go test -coverprofile=cover.out . && go tool cover -func=cover.out | tail -1
 ```
 
-The tests run the [fstesting](https://github.com/absfs/fstesting) suite
+Statement coverage is about 97% for the package and 96% for the module,
+including the composition example, which a smoke test runs. The tests run the [fstesting](https://github.com/absfs/fstesting) suite
 over memfs layers and over host directories (basefs over osfs), replay a
 developer's session in a workspace and check the upper on disk marker by
-marker, inject layer failures, and run concurrent changes under the race
+marker, check permission handling against a host (read-only lower
+directories, renames the host refuses), inject layer failures at each step
+of every multi-step change, and run concurrent changes under the race
 detector.
 
 ## Related

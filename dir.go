@@ -22,23 +22,23 @@ func newUnionDir(ufs *UnionFS, path string) *unionDir {
 	return &unionDir{ufs: ufs, path: path}
 }
 
-// Close closes the directory
+// Close closes the directory.
 func (d *unionDir) Close() error {
 	d.closed = true
 	return nil
 }
 
-// Read is not supported for directories
+// Read is not supported for directories.
 func (d *unionDir) Read(p []byte) (n int, err error) {
 	return 0, os.ErrInvalid
 }
 
-// ReadAt is not supported for directories
+// ReadAt is not supported for directories.
 func (d *unionDir) ReadAt(p []byte, off int64) (n int, err error) {
 	return 0, os.ErrInvalid
 }
 
-// Seek seeks to an offset in the directory listing
+// Seek seeks to an offset in the directory listing.
 func (d *unionDir) Seek(offset int64, whence int) (int64, error) {
 	if d.closed {
 		return 0, os.ErrClosed
@@ -65,22 +65,22 @@ func (d *unionDir) Seek(offset int64, whence int) (int64, error) {
 	return int64(d.offset), nil
 }
 
-// Write is not supported for directories
+// Write is not supported for directories.
 func (d *unionDir) Write(p []byte) (n int, err error) {
 	return 0, os.ErrInvalid
 }
 
-// WriteAt is not supported for directories
+// WriteAt is not supported for directories.
 func (d *unionDir) WriteAt(p []byte, off int64) (n int, err error) {
 	return 0, os.ErrInvalid
 }
 
-// Name returns the base name of the directory
+// Name returns the base name of the directory.
 func (d *unionDir) Name() string {
 	return path.Base(d.path)
 }
 
-// Readdir reads directory entries
+// Readdir reads directory entries.
 func (d *unionDir) Readdir(count int) ([]os.FileInfo, error) {
 	if d.closed {
 		return nil, os.ErrClosed
@@ -119,7 +119,7 @@ func (d *unionDir) Readdir(count int) ([]os.FileInfo, error) {
 	return result, nil
 }
 
-// Readdirnames reads directory entry names
+// Readdirnames reads directory entry names.
 func (d *unionDir) Readdirnames(count int) ([]string, error) {
 	infos, err := d.Readdir(count)
 	if err != nil {
@@ -134,7 +134,7 @@ func (d *unionDir) Readdirnames(count int) ([]string, error) {
 	return names, nil
 }
 
-// Stat returns the FileInfo for the directory
+// Stat returns the FileInfo for the directory.
 func (d *unionDir) Stat() (os.FileInfo, error) {
 	if d.closed {
 		return nil, os.ErrClosed
@@ -142,17 +142,17 @@ func (d *unionDir) Stat() (os.FileInfo, error) {
 	return d.ufs.Stat(d.path)
 }
 
-// Sync is a no-op for directories
+// Sync is a no-op for directories.
 func (d *unionDir) Sync() error {
 	return nil
 }
 
-// Truncate is not supported for directories
+// Truncate is not supported for directories.
 func (d *unionDir) Truncate(size int64) error {
 	return os.ErrInvalid
 }
 
-// WriteString is not supported for directories
+// WriteString is not supported for directories.
 func (d *unionDir) WriteString(s string) (ret int, err error) {
 	return 0, os.ErrInvalid
 }
