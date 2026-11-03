@@ -5,7 +5,6 @@ import (
 	"os"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/absfs/absfs"
 	"github.com/absfs/memfs"
@@ -75,7 +74,7 @@ func TestRemoveDirClearsItsWhiteouts(t *testing.T) {
 	put(t, lower, "/d/b", "b")
 
 	// Copy /d up so the upper holds the whiteouts for its children.
-	if err := ufs.Chtimes("/d", time.Now(), time.Now()); err != nil {
+	if err := ufs.Chtimes("/d", changedTime, changedTime); err != nil {
 		t.Fatal(err)
 	}
 	for _, n := range []string{"/d/a", "/d/b"} {

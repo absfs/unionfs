@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+// changedTime is a modification time no test file has, for Chtimes calls
+// meant to copy up. time.Now() can equal a just-created file's time on a
+// coarse clock (Windows), and an unchanged mtime copies nothing up.
+var changedTime = time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+
 // An access-time-only Chtimes of a name only a lower layer has copies
 // nothing up: mtime equal to the lower's, or zero. Anything else copies up.
 func TestChtimesAccessTimeOnly(t *testing.T) {

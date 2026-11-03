@@ -205,7 +205,7 @@ func TestCopyUpKeepsParentTimes(t *testing.T) {
 		lower("/", old)
 		for _, op := range []func() error{
 			func() error { return ufs.Chmod("/d/a", 0600) },
-			func() error { return ufs.Chtimes("/d/sub/c", time.Now(), time.Now()) },
+			func() error { return ufs.Chtimes("/d/sub/c", changedTime, changedTime) },
 			func() error { return ufs.Truncate("/d/b", 1) },
 		} {
 			must(t, op())

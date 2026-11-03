@@ -8,7 +8,6 @@ import (
 	"sync"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/absfs/absfs"
 	"github.com/absfs/memfs"
@@ -181,7 +180,7 @@ func TestLayerErrorsPropagate(t *testing.T) {
 	upper.clear()
 	// A lower layer that fails to list fails the listing: skipping it
 	// would show its files as deleted.
-	must(t, ufs.Chtimes("/d", time.Now(), time.Now()))
+	must(t, ufs.Chtimes("/d", changedTime, changedTime))
 	lower.failOn("readdir", "/d")
 	_, err = ufs.ReadDir("/d")
 	wantInjected(t, "ReadDir of a lower layer", err)
@@ -258,24 +257,24 @@ func TestCopyUpFailuresLeaveNoPartialFile(t *testing.T) {
 	lower.clear()
 
 	upper.failOn("chmod", "/d/a")
-	wantInjected(t, "copy-up chmod", ufs.Chtimes("/d/a", time.Now(), time.Now()))
+	wantInjected(t, "copy-up chmod", ufs.Chtimes("/d/a", changedTime, changedTime))
 	if exists(upper, "/d/a") {
 		t.Fatal("partial copy left in the upper")
 	}
 	upper.clear()
 
 	upper.failOn("openfile", "/d/b")
-	wantInjected(t, "copy-up create", ufs.Chtimes("/d/b", time.Now(), time.Now()))
+	wantInjected(t, "copy-up create", ufs.Chtimes("/d/b", changedTime, changedTime))
 	upper.clear()
 
 	ufs, upper, _ = faultUnion(t)
 	upper.failOn("mkdir", "/d")
-	wantInjected(t, "copy-up of the parent", ufs.Chtimes("/d/b", time.Now(), time.Now()))
+	wantInjected(t, "copy-up of the parent", ufs.Chtimes("/d/b", changedTime, changedTime))
 	upper.clear()
 
 	ufs, upper, _ = faultUnion(t)
 	upper.failOn("chmod", "/d")
-	wantInjected(t, "copy-up of the parent's mode", ufs.Chtimes("/d", time.Now(), time.Now()))
+	wantInjected(t, "copy-up of the parent's mode", ufs.Chtimes("/d", changedTime, changedTime))
 	upper.clear()
 
 	ufs, upper, lower = faultUnion(t)
