@@ -2,6 +2,7 @@ package unionfs
 
 import (
 	"fmt"
+	"os"
 	"testing"
 	"time"
 )
@@ -378,15 +379,20 @@ func TestCacheExpiration(t *testing.T) {
 		t.Errorf("expected 1 cached entry, got %d", stats.StatCacheSize)
 	}
 
-	// Wait for cache to expire
-	time.Sleep(150 * time.Millisecond)
-
-	// This should trigger a new lookup since cache expired
-	// We can't easily verify this without more instrumentation,
-	// but at least we verify it doesn't crash
-	_, err = ufs.Stat("/test.txt")
-	if err != nil {
+	// A file deleted from a layer directly is still served while the entry
+	// lives.
+	if err := baseLayer.Remove("/test.txt"); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := ufs.Stat("/test.txt"); err != nil {
+		t.Fatalf("Stat while cached: %v", err)
+	}
+
+	// Once the TTL has passed, Stat looks again and sees the deletion.
+	now := time.Now().Add(150 * time.Millisecond)
+	ufs.cache.now = func() time.Time { return now }
+	if _, err := ufs.Stat("/test.txt"); !os.IsNotExist(err) {
+		t.Fatalf("Stat after expiry: %v, want not exist", err)
 	}
 }
 

@@ -6,7 +6,10 @@ import (
 	"time"
 )
 
-// Cache provides caching capabilities for filesystem operations
+// Cache is the Stat cache a UnionFS keeps when WithStatCache or
+// WithCacheConfig enables it. Callers never construct or receive one: it is
+// exported only for compatibility with v1.0.0. Use UnionFS.CacheStats,
+// InvalidateCache, InvalidateCacheTree and ClearCache instead.
 type Cache struct {
 	statCache     map[string]*statCacheEntry
 	negativeCache map[string]*negativeCacheEntry
@@ -15,6 +18,7 @@ type Cache struct {
 	negativeTTL   time.Duration
 	maxEntries    int
 	enabled       bool
+	now           func() time.Time // the clock; tests replace it
 }
 
 // statCacheEntry stores cached file info
@@ -42,6 +46,7 @@ func newCache(enabled bool, statTTL, negativeTTL time.Duration, maxEntries int) 
 		negativeTTL:   negativeTTL,
 		maxEntries:    maxEntries,
 		enabled:       true,
+		now:           time.Now,
 	}
 }
 
@@ -59,8 +64,9 @@ func (c *Cache) getStat(path string) (os.FileInfo, int, bool) {
 		return nil, -1, false
 	}
 
-	// Check if entry has expired
-	if time.Now().After(entry.expires) {
+	// An entry is served only before it expires, so a zero TTL never
+	// serves one, however coarse the clock.
+	if !c.now().Before(entry.expires) {
 		return nil, -1, false
 	}
 
@@ -84,7 +90,7 @@ func (c *Cache) putStat(path string, info os.FileInfo, layer int) {
 	c.statCache[path] = &statCacheEntry{
 		info:    info,
 		layer:   layer,
-		expires: time.Now().Add(c.statTTL),
+		expires: c.now().Add(c.statTTL),
 	}
 }
 
@@ -102,8 +108,9 @@ func (c *Cache) isNegative(path string) bool {
 		return false
 	}
 
-	// Check if entry has expired
-	if time.Now().After(entry.expires) {
+	// An entry is served only before it expires, so a zero TTL never
+	// serves one, however coarse the clock.
+	if !c.now().Before(entry.expires) {
 		return false
 	}
 
@@ -125,7 +132,7 @@ func (c *Cache) putNegative(path string) {
 	}
 
 	c.negativeCache[path] = &negativeCacheEntry{
-		expires: time.Now().Add(c.negativeTTL),
+		expires: c.now().Add(c.negativeTTL),
 	}
 }
 
@@ -212,7 +219,7 @@ func (c *Cache) evictOldestNegative() {
 	}
 }
 
-// Stats returns cache statistics
+// Stats returns the cache's configuration and current size.
 func (c *Cache) Stats() CacheStats {
 	if !c.enabled {
 		return CacheStats{Enabled: false}
@@ -231,12 +238,13 @@ func (c *Cache) Stats() CacheStats {
 	}
 }
 
-// CacheStats contains cache statistics
+// CacheStats describes a union's Stat cache, as UnionFS.CacheStats reports
+// it. Every field is zero when the cache is disabled.
 type CacheStats struct {
-	Enabled           bool
-	StatCacheSize     int
-	NegativeCacheSize int
-	MaxEntries        int
-	StatTTL           time.Duration
-	NegativeTTL       time.Duration
+	Enabled           bool          // whether the cache is on
+	StatCacheSize     int           // cached Stat results, live or expired
+	NegativeCacheSize int           // cached misses, live or expired
+	MaxEntries        int           // bound on entries of each kind
+	StatTTL           time.Duration // how long a Stat result is served
+	NegativeTTL       time.Duration // how long a miss is served
 }

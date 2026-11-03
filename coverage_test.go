@@ -619,19 +619,20 @@ func TestCacheClear(t *testing.T) {
 	}
 }
 
-// TestCacheZeroTTL tests cache with zero TTL (effectively disabled per-request)
+// TestCacheZeroTTL checks that a zero TTL never serves an entry, without
+// relying on the clock advancing between the put and the get.
 func TestCacheZeroTTL(t *testing.T) {
 	cache := newCache(true, 0, 0, 100)
+	frozen := time.Now()
+	cache.now = func() time.Time { return frozen }
 
 	cache.putStat("/test", &mockFileInfo{name: "test"}, 0)
-
-	// With zero TTL, cache entry should be immediately expired
-	// Add a tiny sleep to ensure time.Now() advances past the expiry time
-	time.Sleep(1 * time.Millisecond)
-
-	_, _, ok := cache.getStat("/test")
-	if ok {
+	if _, _, ok := cache.getStat("/test"); ok {
 		t.Error("cache entry with zero TTL should be expired")
+	}
+	cache.putNegative("/missing")
+	if cache.isNegative("/missing") {
+		t.Error("negative entry with zero TTL should be expired")
 	}
 }
 
