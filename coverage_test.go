@@ -2033,7 +2033,7 @@ func TestReaddirError(t *testing.T) {
 	}
 
 	// Reading again should return nil for count <= 0
-	entries, err = dir.Readdir(0)
+	_, err = dir.Readdir(0)
 	if err != nil {
 		t.Errorf("Readdir(0) after EOF should not error: %v", err)
 	}

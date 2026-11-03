@@ -1,7 +1,6 @@
 package main
 
 import (
-	"io"
 	"log"
 	"os"
 
@@ -24,14 +23,4 @@ func must(err error) {
 	if err != nil {
 		log.Fatal(err)
 	}
-}
-
-// readFile is a helper to read files
-func readFile(fs absfs.FileSystem, name string) ([]byte, error) {
-	f, err := fs.Open(name)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	return io.ReadAll(f)
 }

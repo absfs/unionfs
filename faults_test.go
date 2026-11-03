@@ -267,12 +267,12 @@ func TestCopyUpFailuresLeaveNoPartialFile(t *testing.T) {
 	wantInjected(t, "copy-up create", ufs.Chtimes("/d/b", time.Now(), time.Now()))
 	upper.clear()
 
-	ufs, upper, lower = faultUnion(t)
+	ufs, upper, _ = faultUnion(t)
 	upper.failOn("mkdir", "/d")
 	wantInjected(t, "copy-up of the parent", ufs.Chtimes("/d/b", time.Now(), time.Now()))
 	upper.clear()
 
-	ufs, upper, lower = faultUnion(t)
+	ufs, upper, _ = faultUnion(t)
 	upper.failOn("chmod", "/d")
 	wantInjected(t, "copy-up of the parent's mode", ufs.Chtimes("/d", time.Now(), time.Now()))
 	upper.clear()
@@ -358,7 +358,7 @@ func TestRemoveFailures(t *testing.T) {
 }
 
 func TestRenameFailures(t *testing.T) {
-	ufs, upper, lower := faultUnion(t)
+	ufs, _, lower := faultUnion(t)
 
 	// Copy-up of the source.
 	lower.failOn("open", "/d/a")
@@ -368,7 +368,7 @@ func TestRenameFailures(t *testing.T) {
 	wantInjected(t, "listing a lower directory to move", ufs.Rename("/d", "/e"))
 	lower.clear()
 
-	ufs, upper, lower = faultUnion(t)
+	ufs, upper, _ := faultUnion(t)
 	upper.failOn("mkdir", "/d/sub")
 	wantInjected(t, "nested directory copy-up", ufs.Rename("/d", "/e"))
 	upper.clear()
