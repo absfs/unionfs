@@ -120,8 +120,22 @@ func (ufs *UnionFS) chmodUpper(p string, typ, mode os.FileMode) error {
 
 // ensureUpperDir makes sure directory node n exists in the writable layer,
 // copying it up, with its parents, from the layer it comes from. It updates
-// n to record the writable layer as its top.
+// n to record the writable layer as its top. A node from the lookup cache
+// is checked against the layers first (see current).
 func (ufs *UnionFS) ensureUpperDir(n *node) error {
+	if ufs.inUpper(n) {
+		return nil
+	}
+	if err := ufs.current(n); err != nil {
+		return err
+	}
+	return ufs.copyUpDir(n)
+}
+
+// copyUpDir is ensureUpperDir for a node known to be current: its parents
+// are then current too, as far as copying up goes, since each holds n in
+// every layer n comes from and none is hidden.
+func (ufs *UnionFS) copyUpDir(n *node) error {
 	if ufs.inUpper(n) {
 		return nil
 	}
@@ -137,7 +151,7 @@ func (ufs *UnionFS) ensureUpperDir(n *node) error {
 		n.layers = append([]int{0}, n.layers...)
 		return nil
 	}
-	if err := ufs.ensureUpperDir(n.parent); err != nil {
+	if err := ufs.copyUpDir(n.parent); err != nil {
 		return err
 	}
 	err := ufs.keepDir(n.parent.path, func() error {
@@ -207,16 +221,102 @@ func (ufs *UnionFS) copyUp(n *node) error {
 	return ufs.copyUpFile(n, true)
 }
 
+// current reports whether node n, which a change is about to copy up or
+// write a metadata marker for, is still what the merged view has at
+// n.path. Without the lookup cache it always is: every node is resolved
+// afresh under the union's lock. With it, n may be stale. The cache keys
+// a name by the union's spelling, and a host may take two spellings for
+// one entry ("d" and "D" where it folds case), so a change through one
+// spelling leaves what is cached under the other as it was: a lower entry
+// the change whited out, or hid with an opaque directory, still shows
+// there until it expires. Reading it is allowed; copying it up would make
+// the hidden data part of the writable layer for good.
+//
+// So with the cache on n.path is resolved again from the layers, and on
+// any difference the cache is emptied and the change refused: with the
+// layers' error, ENOENT when nothing is there now, and ESTALE when
+// something else is. Retrying it then acts on the current view.
+func (ufs *UnionFS) current(n *node) error {
+	if ufs.lc == nil || n.parent == nil {
+		return nil
+	}
+	f, err := ufs.uncached(n.path)
+	if err == nil && ufs.agrees(f, n) {
+		return nil
+	}
+	ufs.lc.clear()
+	if err != nil {
+		return err
+	}
+	return &os.PathError{Op: "copyup", Path: n.path, Err: syscall.ESTALE}
+}
+
+// uncached resolves the clean absolute path p, which has no symbolic links
+// in its directory elements, from the layers and not from the lookup
+// cache. It fails with ENOTDIR when one of those elements is no longer a
+// directory: a link there is not followed, as walk would.
+func (ufs *UnionFS) uncached(p string) (*node, error) {
+	cur, err := ufs.root()
+	if err != nil {
+		return nil, err
+	}
+	for _, elem := range splitPath(p) {
+		if cur.info != nil && !cur.info.IsDir() {
+			return nil, &os.PathError{Op: "lstat", Path: p, Err: syscall.ENOTDIR}
+		}
+		if cur, err = ufs.child(cur, elem); err != nil {
+			return nil, err
+		}
+	}
+	return cur, nil
+}
+
+// agrees reports whether n, resolved earlier, agrees with f, the merged
+// view's entry at n.path now: an entry of the same type from the same
+// layers, changed by the same metadata marker if any. A directory the
+// writable layer has gained since n was resolved, and that still shows
+// every layer n has, agrees too: the change that made it (a copy-up of n or
+// of something inside it, often by the same call) changed nothing in the
+// merged view, and ensureUpperDir joins it.
+func (ufs *UnionFS) agrees(f, n *node) bool {
+	if f.info.Mode().Type() != n.info.Mode().Type() ||
+		(f.meta == nil) != (n.meta == nil) || f.meta != nil && f.metaLayer != n.metaLayer {
+		return false
+	}
+	layers := f.layers
+	if n.info.IsDir() && ufs.inUpper(f) && !ufs.inUpper(n) {
+		layers = layers[1:]
+	}
+	if len(layers) != len(n.layers) {
+		return false
+	}
+	for i := range layers {
+		if layers[i] != n.layers[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // copyUpFile copies the non-directory node n into the writable layer with
 // its mode and modification time. A symbolic link is copied as a link to the
 // same target. A regular file's contents are copied when withData is set;
 // otherwise it is created empty, for callers about to truncate it. On
-// failure no partial copy is left behind.
+// failure no partial copy is left behind. A node from the lookup cache is
+// checked against the layers first (see current).
 func (ufs *UnionFS) copyUpFile(n *node, withData bool) error {
+	if err := ufs.current(n); err != nil {
+		return err
+	}
+	return ufs.copyUpCurrentFile(n, withData)
+}
+
+// copyUpCurrentFile is copyUpFile for a node known to be current.
+func (ufs *UnionFS) copyUpCurrentFile(n *node, withData bool) error {
 	if err := reservedErr(n); err != nil {
 		return err
 	}
-	if err := ufs.ensureUpperDir(n.parent); err != nil {
+	if err := ufs.copyUpDir(n.parent); err != nil {
 		return err
 	}
 	mode := n.info.Mode()
@@ -316,8 +416,19 @@ type onlyReader struct{ io.Reader }
 // completed copy-ups behind; Rename strips them with stripMarkers once the
 // tree has moved. Rename uses it to move a directory that lower layers
 // contribute to.
+//
+// A directory from the lookup cache is checked against the layers first
+// (see current); what is under it is resolved from the layers.
 func (ufs *UnionFS) materialize(d *node) error {
-	if err := ufs.ensureUpperDir(d); err != nil {
+	if err := ufs.current(d); err != nil {
+		return err
+	}
+	return ufs.materializeCurrent(d)
+}
+
+// materializeCurrent is materialize for a directory known to be current.
+func (ufs *UnionFS) materializeCurrent(d *node) error {
+	if err := ufs.copyUpDir(d); err != nil {
 		return err
 	}
 	ents, err := ufs.listDir(d)
@@ -329,10 +440,11 @@ func (ufs *UnionFS) materialize(d *node) error {
 		if err != nil {
 			return err
 		}
-		if c.info.IsDir() {
-			err = ufs.materialize(c)
-		} else {
-			err = ufs.copyUp(c)
+		switch {
+		case c.info.IsDir():
+			err = ufs.materializeCurrent(c)
+		case !ufs.inUpper(c):
+			err = ufs.copyUpCurrentFile(c, true)
 		}
 		if err != nil {
 			return err
@@ -342,8 +454,9 @@ func (ufs *UnionFS) materialize(d *node) error {
 }
 
 // stripMarkers removes every whiteout, opaque marker and internal leftover
-// from the writable layer's tree under dir, keeping each directory's mode
-// and modification time.
+// from the writable layer's tree under dir, and any other name the merged
+// view hides as reserved, keeping each directory's mode and modification
+// time.
 func (ufs *UnionFS) stripMarkers(dir string) error {
 	ents, err := ufs.upper().ReadDir(dir)
 	if err != nil {
@@ -353,7 +466,7 @@ func (ufs *UnionFS) stripMarkers(dir string) error {
 		for _, e := range ents {
 			p := path.Join(dir, e.Name())
 			switch {
-			case IsWhiteout(e.Name()):
+			case reservedForClient(e.Name()):
 				if err := ufs.upper().RemoveAll(p); err != nil && !isNotExist(err) {
 					return err
 				}
@@ -367,8 +480,9 @@ func (ufs *UnionFS) stripMarkers(dir string) error {
 	})
 }
 
-// clearMarkers removes the whiteouts, the opaque marker and any internal
-// leftovers held directly in directory dir of the writable layer.
+// clearMarkers removes the whiteouts, the opaque marker, any internal
+// leftovers and any other name the merged view hides as reserved, held
+// directly in directory dir of the writable layer.
 func (ufs *UnionFS) clearMarkers(dir string) error {
 	ents, err := ufs.upper().ReadDir(dir)
 	if err != nil {
@@ -376,7 +490,7 @@ func (ufs *UnionFS) clearMarkers(dir string) error {
 	}
 	return ufs.keepDir(dir, func() error {
 		for _, e := range ents {
-			if !IsWhiteout(e.Name()) {
+			if !reservedForClient(e.Name()) {
 				continue
 			}
 			if err := ufs.upper().RemoveAll(path.Join(dir, e.Name())); err != nil && !isNotExist(err) {

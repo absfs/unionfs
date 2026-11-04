@@ -201,12 +201,15 @@ func TestStaleLinkNotFollowed(t *testing.T) {
 		})
 		// A file only a lower layer had, cached so, that the writable
 		// layer now has as a link: copying it up must not open the link.
+		// The cached file is no longer what the layers have there.
 		t.Run(kind+"/copy-up", func(t *testing.T) {
 			ufs, upper := cached(t)
 			must(t, ufs.Chmod("/d/b", 0600))
 			lstat(t, ufs, "/d/a")
 			symlink(t, upper, "/canary", "/d/a")
-			wantExist(t, "Truncate", ufs.Truncate("/d/a", 0))
+			if err := ufs.Truncate("/d/a", 0); !errors.Is(err, syscall.ESTALE) {
+				t.Fatalf("Truncate: %v, want ESTALE", err)
+			}
 			wantCanary(t, upper, "/canary", 0, 0, false)
 		})
 		// A metadata marker, cached as the file's, that is now a link:

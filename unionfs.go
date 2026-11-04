@@ -164,7 +164,13 @@ func WithCacheConfig(enabled bool, statTTL, negativeTTL time.Duration, maxEntrie
 // On a host that takes two spellings for one name ("d" and "D" where it
 // folds case, NFC and NFD forms on macOS), a change made through one
 // spelling drops only that spelling's entries, so the other may show the
-// old view until it expires. A cached directory is never walked through
+// old view until it expires. A write never makes that old view permanent:
+// a copy-up, or a new metadata marker, for an entry the cache resolved
+// first checks it against the layers, and when the merged view has changed
+// there (a lower file the other spelling's change whited out, or hid
+// behind an opaque directory) the cache is emptied and the change fails,
+// with ENOENT when the name is gone and ESTALE otherwise, so that a retry
+// acts on the current view. A cached directory is never walked through
 // once a link may have replaced it: creating a link in the writable layer,
 // or renaming anything there but a regular file, empties the cache.
 func WithLookupCache(ttl time.Duration, maxEntries int) Option {

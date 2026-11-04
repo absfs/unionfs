@@ -14,10 +14,12 @@ import (
 // (OpaqueWhiteout) is a whiteout by this test too; use IsOpaqueMarker or
 // WhiteoutTarget to tell them apart.
 //
-// Whiteout markers never appear in a union's merged view, and a union refuses
-// to create a file, directory or symlink whose name starts with the prefix,
-// in any ASCII case (".WH.", ".Wh."), since a host that folds case takes
-// such a name for a marker.
+// IsWhiteout is case-sensitive: it recognises markers as the union writes
+// them. A union reserves the prefix in every ASCII case (".WH.", ".Wh."),
+// since a host that folds case takes such a name for a marker: names that
+// start with it never appear in the merged view and cannot be opened,
+// changed, renamed or removed through it, and a client cannot create one.
+// Only the lowercase prefix ever hides anything.
 // Under WithMarkersOnlyInWritableLayer such names in a read-only layer are
 // ordinary entries instead; see ReservedNames.
 func IsWhiteout(name string) bool {
@@ -134,8 +136,9 @@ func opaquePath(dir string) string {
 
 // ReservedNames walks the tree under root in fsys, without following
 // symbolic links, and returns the slash-separated path of every entry whose
-// name starts with WhiteoutPrefix, sorted. It does not descend into such a
-// directory: everything under it is reserved with it.
+// name starts with WhiteoutPrefix in any ASCII case (".wh.", ".WH."), sorted.
+// It does not descend into such a directory: everything under it is reserved
+// with it.
 //
 // Run it on a tree before using it as a read-only layer. By default a union
 // takes every such name in any layer for a marker (a whiteout, opaque
@@ -160,7 +163,7 @@ func ReservedNames(fsys absfs.FileSystem, root string) ([]string, error) {
 			}
 			p := path.Join(dir, name)
 			switch {
-			case IsWhiteout(name):
+			case reservedForClient(name):
 				out = append(out, p)
 			case e.IsDir():
 				if err := walk(p); err != nil {

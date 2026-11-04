@@ -294,15 +294,40 @@ func TestCaseFoldedReservedNamesRefused(t *testing.T) {
 				}
 				must(t, ufs.Remove(p))
 			}
-			// An entry already at such a name, made before or around the
-			// union, is still there to read and to remove.
+			// An entry already at such a name, made around the union, is
+			// hidden as the marker it could be on a host that folds case:
+			// not listed, read, changed, renamed or removed.
 			put(t, upper, "/d/.WH.old", "old")
-			if get(t, ufs, "/d/.WH.old") != "old" {
-				t.Fatal("existing .WH.old")
+			wantNotExist(t, ufs, "/d/.WH.old")
+			for _, n := range list(t, ufs, "/d") {
+				if strings.EqualFold(n, ".wh.old") {
+					t.Fatalf("listed %s", n)
+				}
 			}
-			must(t, ufs.Rename("/d/.WH.old", "/d/kept"))
-			if get(t, ufs, "/d/kept") != "old" {
-				t.Fatal("renamed .WH.old")
+			wantGone := func(op string, err error) {
+				t.Helper()
+				if !os.IsNotExist(err) {
+					t.Errorf("%s /d/.WH.old: err = %v, want not exist", op, err)
+				}
+			}
+			_, err := ufs.ReadFile("/d/.WH.old")
+			wantGone("ReadFile", err)
+			_, err = ufs.OpenFile("/d/.WH.old", os.O_WRONLY|os.O_APPEND, 0)
+			wantGone("OpenFile", err)
+			wantGone("Chmod", ufs.Chmod("/d/.WH.old", 0600))
+			wantGone("Rename", ufs.Rename("/d/.WH.old", "/d/kept"))
+			wantGone("Remove", ufs.Remove("/d/.WH.old"))
+			if get(t, upper, "/d/.WH.old") != "old" {
+				t.Fatal("hidden entry changed")
+			}
+			// A directory that holds nothing else is empty, and goes with
+			// it.
+			must(t, ufs.Mkdir("/e", 0755))
+			put(t, upper, "/e/.WH.old", "old")
+			wantNames(t, list(t, ufs, "/e"))
+			must(t, ufs.Remove("/e"))
+			if exists(upper, "/e") {
+				t.Fatal("upper still has /e")
 			}
 			for _, n := range []string{"/d/a", "/d/b"} {
 				if _, err := ufs.Lstat(n); err != nil {

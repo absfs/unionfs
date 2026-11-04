@@ -29,7 +29,8 @@ opaque marker files never appear in the merged view, and creating a name
 that starts with WhiteoutPrefix, in any ASCII case, fails with EPERM (see
 Whiteout format for such names in a read-only layer). A host that folds
 case takes ".WH.x" for the marker ".wh.x", so the union refuses such
-names on every host.
+names on every host, and none of them resolves: no spelling of a marker's
+name reaches the marker.
 
 # Writing
 
@@ -167,9 +168,14 @@ topmost path the change created or removed, or ClearCache; a name removed
 from its layer is noticed at once. On a host that takes two spellings for
 one name (by case, or by Unicode normalisation on macOS), a change made
 through one spelling drops only that spelling's entries, so the other may
-show the old view until it expires. It never walks through a directory
-that has since become a symbolic link: creating a link in the writable
-layer, or renaming anything there but a regular file, empties the cache.
+show the old view until it expires. A write never makes that old view
+permanent: a copy-up, or a new metadata marker, for an entry the cache
+resolved first checks it against the layers, and when the merged view has
+changed there the cache is emptied and the change fails, with ENOENT when
+the name is gone and ESTALE otherwise, so a retry acts on the current
+view. The cache never walks through a directory that has since become a
+symbolic link: creating a link in the writable layer, or renaming
+anything there but a regular file, empties the cache.
 
 WithStatCache and WithCacheConfig enable a cache of Stat and Lstat
 results. Changes made through the union drop the entries at and under the
@@ -227,9 +233,10 @@ reading the lower copy after another handle copies it up.
     ENOTDIR. Lchown of a link fails with errors.ErrUnsupported when the
     writable layer has no Lchown. On a host that folds case, an entry
     named ".WH.x" that is already in the writable layer (the union no
-    longer creates one) is taken for the marker ".wh.x": as a whiteout it
-    hides x from lookups, though ReadDir still lists x; as a regular file
-    at a metadata marker's name it becomes x's metadata; as a link or
-    directory there it makes metadata changes to x fail with EEXIST.
+    longer creates one, and does not resolve one) is taken for the marker
+    ".wh.x": as a whiteout it hides x from lookups, though ReadDir still
+    lists x; as a regular file at a metadata marker's name it becomes x's
+    metadata; as a link or directory there it makes metadata changes to x
+    fail with EEXIST.
 */
 package unionfs

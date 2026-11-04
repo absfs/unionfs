@@ -237,7 +237,11 @@ func (ufs *UnionFS) root() (*node, error) {
 // view has no such entry.
 func (ufs *UnionFS) child(dir *node, name string) (*node, error) {
 	p := path.Join(dir.path, name)
-	reserved := IsWhiteout(name)
+	// A name starting with the whiteout prefix in any ASCII case is
+	// reserved wherever markers count: a host that folds case takes ".WH.x"
+	// for the marker ".wh.x", which must be no more reachable that way than
+	// by its own name.
+	reserved := reservedForClient(name)
 	if reserved && !ufs.upperMarkersOnly {
 		return nil, &os.PathError{Op: "lstat", Path: p, Err: os.ErrNotExist}
 	}
@@ -453,10 +457,11 @@ func (ufs *UnionFS) honours(li int) bool {
 }
 
 // reservedErr refuses a change to n when n, or the directory it is in, has
-// a name in the reserved space: only a read-only layer can have one, under
-// WithMarkersOnlyInWritableLayer, and the writable layer cannot hold it.
+// a name in the reserved space, in any ASCII case: only a read-only layer
+// can have one, under WithMarkersOnlyInWritableLayer, and the writable layer
+// cannot hold it.
 func reservedErr(n *node) error {
-	if IsWhiteout(path.Base(n.path)) {
+	if reservedForClient(path.Base(n.path)) {
 		return &os.PathError{Op: "copyup", Path: n.path, Err: syscall.EPERM}
 	}
 	return nil
@@ -465,7 +470,7 @@ func reservedErr(n *node) error {
 // listDir returns the merged entries of directory dir, sorted by name.
 // Entries from upper layers shadow those below; a whiteout in a layer hides
 // its name in the layers below it; whiteouts and opaque markers themselves
-// are never listed.
+// are never listed, nor is any other name child refuses as reserved.
 func (ufs *UnionFS) listDir(dir *node) ([]fs.DirEntry, error) {
 	seen := make(map[string]bool)
 	metas := make(map[string]fs.DirEntry) // metadata markers in the layers above
@@ -488,7 +493,7 @@ func (ufs *UnionFS) listDir(dir *node) ([]fs.DirEntry, error) {
 			if name == "." || name == ".." {
 				continue
 			}
-			if IsWhiteout(name) && ufs.honours(li) {
+			if ufs.honours(li) && reservedForClient(name) {
 				if t, ok := WhiteoutTarget(name); ok {
 					hidden = append(hidden, t)
 				} else if IsMetaMarker(name) && e.Type().IsRegular() {

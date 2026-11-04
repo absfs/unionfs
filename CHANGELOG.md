@@ -53,6 +53,32 @@ follows such a link wherever the union hands it a path through it.
   or renaming anything there but a regular file, now empties the lookup
   cache. The lookup cache is new in this release, so no released version
   has this one.
+- On a host that folds case, the union's existing markers were reachable
+  through another spelling of their names: lookups decided that a name was
+  reserved by its lowercase `.wh.` prefix only, and the host took `.WH.x`
+  for the whiteout `.wh.x`. `Remove("/.WH.x")` deleted the whiteout and
+  brought a deleted lower `x` back, `Rename` of `.WH.<x>` did the same,
+  `Remove` of `.WH.__DIR_OPAQUE` exposed the lower entries of an opaque
+  directory, and `Chmod` of `.WH..WH.META.<x>` changed `x`'s mode. A name
+  starting with `.wh.` in any ASCII case is now reserved wherever markers
+  count: it is missing from the merged view, and nothing can be read,
+  changed, renamed or removed through it. Under
+  `WithMarkersOnlyInWritableLayer` a read-only layer's such names stay
+  ordinary read-only entries. Only the lowercase prefix is recognised as a
+  marker, as before; the changeset format is unchanged.
+- With `WithLookupCache` on a host that folds case, a write through a
+  stale spelling made a hidden view permanent. After `Stat("/d/x")` of a
+  lower file, `RemoveAll("/D")` and `Mkdir("/D")` made `/D` opaque, but
+  the cached `/d` still showed the lower directory, and `OpenFile("/d/x",
+  O_APPEND)` copied the hidden lower file up into the opaque directory,
+  where it showed under every spelling for good. The same held for
+  `Truncate`, `Rename`, `Chmod` and `Chtimes` through `/d`, for files
+  created in it after `/D` was whited out (which brought the directory and
+  its lower entries back), and for renaming a cached directory. Every
+  copy-up, and every new metadata marker, now checks a node from the
+  lookup cache against the layers first; when the merged view has changed
+  there, the cache is emptied and the change fails, with `ENOENT` when the
+  name is gone and `ESTALE` otherwise, so a retry acts on the current view.
 
 The case-folding attacks are tested on macOS; Windows runs the same code
 paths but no host-directory test of its own.
@@ -212,8 +238,13 @@ These may affect existing callers:
 - Names starting with `.wh.` are refused (`EPERM`) and never resolve, so a
   marker file can no longer be read, listed or created as a regular file.
   Creating a name starting with `.wh.` in any other ASCII case (`.WH.x`)
-  is refused too (see [Security](#security)); existing ones still resolve,
-  and can be read, removed and renamed away.
+  is refused too (see [Security](#security)), and an existing one does not
+  resolve either: a host that folds case would take it for the union's
+  marker. By default the same holds for such names in a read-only layer,
+  and `ReservedNames` reports them; under
+  `WithMarkersOnlyInWritableLayer` a read-only layer's are ordinary
+  entries. Removing a directory clears such names from its writable copy
+  with the union's markers.
 - Opening a directory for writing fails with `EISDIR`; `Readlink` of a
   non-link fails with `EINVAL` (memfs returned an empty target).
 - `OpenFile` of an existing file with `O_CREATE` but no write flag is a

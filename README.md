@@ -172,7 +172,10 @@ A whiteout and an entry of the same name never coexist in the writable
 layer once an operation has finished. Marker files never show in the
 merged view, and the union refuses to create a name starting with `.wh.`
 in any ASCII case (`.WH.`, `.Wh.`, `.wH.`), with EPERM: a host that folds
-case takes `.WH.x` for the marker `.wh.x`. The rule holds on every host,
+case takes `.WH.x` for the marker `.wh.x`. For the same reason no such
+name resolves: `.WH.x` is missing from the merged view, so no spelling of
+a marker's name reaches the marker. Only the lowercase prefix is
+recognised as a marker (`IsWhiteout`, `WhiteoutTarget`, `MetaTarget`). The rule holds on every host,
 since one layer can span volumes that fold differently. Only the letters'
 case matters: no other character, and no Unicode normalisation, makes a
 host take a name for one starting with `.wh.`.
@@ -229,9 +232,10 @@ taking the new mode, mtime and owner from the marker itself.
 count in every layer, as in AUFS and OCI image layers, so an upper
 captured from one union can be stacked as a read-only layer of another
 and keep its deletions. The price: a read-only layer's own file or
-directory whose name starts with `.wh.` (a container-image test fixture,
-say) is taken for a marker and silently missing from the merged view, and
-a `.wh.<x>` among them hides `<x>` in the layers below. The union refuses
+directory whose name starts with `.wh.`, in any ASCII case (a
+container-image test fixture, say), is taken for a marker and silently
+missing from the merged view, and a lowercase `.wh.<x>` among them hides
+`<x>` in the layers below. The union refuses
 to create such names, so only a lower can have one. Two ways out:
 
 - `unionfs.ReservedNames(fs, root)` lists every such name under `root` of
@@ -361,19 +365,25 @@ change fails with `ErrNoWritableLayer`.
   with `ENOTDIR`. `Lchown` of a link fails with `errors.ErrUnsupported`
   when the writable layer has no `Lchown`, rather than following it.
 - **Hosts that fold case** (macOS and Windows by default) take `.WH.<x>`
-  for the marker `.wh.<x>`. The union refuses to create such a name, but
-  one can already be in the writable layer: made by v1.0.0, which allowed
-  it, or by a client of the layer's directory. The union then takes it for
-  its own marker. A `.WH.<x>` hides `x` from lookups (`Lstat`, `Open`),
-  though `ReadDir` still lists `x`, and the union deletes it when `x` is
-  created. A `.WH.__dir_opaque` makes its directory opaque. A regular file
+  for the marker `.wh.<x>`. The union refuses to create such a name, and
+  no spelling of one resolves through the union, so neither its markers
+  nor such an entry can be read, changed, renamed or removed through
+  another spelling. One can already be in the writable layer, though:
+  made by v1.0.0, which allowed it, or by a client of the layer's
+  directory. The host then takes it for the union's own marker. A
+  `.WH.<x>` hides `x` from lookups (`Lstat`, `Open`), though `ReadDir`
+  still lists `x`, and the union deletes it when `x` is created. A
+  `.WH.__dir_opaque` makes its directory opaque. A regular file
   `.WH..wh.meta.<x>` becomes `x`'s metadata: its mode, times and owner are
   `x`'s, and `Chmod` of `x` changes it. A link or directory at a metadata
   marker's name makes metadata changes to `x` fail with `EEXIST`, and one
   at a whiteout's or opaque marker's name is left unopened, as above.
-  Looking such a name up by its own spelling finds the union's marker of
-  the folded name. `ReservedNames` does not report these names; check a
-  writable layer from before v1.1.0 for them with a case-insensitive test.
+  `ReservedNames` reports these names in any case; run it on a writable
+  layer from before v1.1.0.
+- **A whiteout spelled differently from the lower name** (`RemoveAll("/D")`
+  of a lower `d`, on a host that folds case) hides `d` from lookups, but
+  `ReadDir` still lists `d`: listing matches whiteouts to names byte for
+  byte.
 - **A lower's own `.wh.` names vanish** by default, taken for markers.
   Check a lower with `ReservedNames`, or use
   `WithMarkersOnlyInWritableLayer` (see the changeset section).
@@ -407,8 +417,14 @@ change fails with `ErrNoWritableLayer`.
   takes two spellings for one name (`d` and `D` where it folds case, the
   composed and decomposed forms of `é` on macOS), a change made through
   one spelling drops only that spelling's entries, so the other may show
-  the old view until it expires. The cache never walks through a
-  directory that has become a symbolic link, though: creating a link, or
+  the old view until it expires. A write never makes that old view
+  permanent: a copy-up, or a new metadata marker, for an entry the cache
+  resolved first checks it against the layers, and when the merged view
+  has changed there (a lower file the other spelling's change whited out
+  or hid behind an opaque directory) the cache is emptied and the change
+  fails, with `ENOENT` when the name is gone and `ESTALE` otherwise, so a
+  retry acts on the current view. The cache never walks through a
+  directory that has become a symbolic link, either: creating a link, or
   renaming anything but a regular file, in the writable layer empties it.
 - **The Stat cache** holds `Stat` and `Lstat` results. It is dropped for
   paths changed through the union, by the path the caller gave and the

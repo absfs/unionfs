@@ -153,7 +153,8 @@ func metaFits(p string) bool {
 // lower layers have, in its marker in the writable layer: it creates the
 // marker, with n's current metadata, if the writable layer has none, and
 // then calls set with the marker's path to apply the change to it. A marker
-// it created is removed again if set fails.
+// it created is removed again if set fails. A node from the lookup cache is
+// checked against the layers before a marker is created (see current).
 func (ufs *UnionFS) setMeta(n *node, set func(marker string) error) error {
 	m := MetaMarkerName(n.path)
 	if ufs.upperMeta(n) {
@@ -162,7 +163,12 @@ func (ufs *UnionFS) setMeta(n *node, set func(marker string) error) error {
 	if err := reservedErr(n); err != nil {
 		return err
 	}
-	if err := ufs.ensureUpperDir(n.parent); err != nil {
+	// A marker for a file the merged view hides would hold its stale
+	// metadata.
+	if err := ufs.current(n); err != nil {
+		return err
+	}
+	if err := ufs.copyUpDir(n.parent); err != nil {
 		return err
 	}
 	return ufs.keepDir(n.parent.path, func() error {
