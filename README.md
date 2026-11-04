@@ -491,6 +491,10 @@ change fails with `ErrNoWritableLayer`.
   retry acts on the current view. The cache never walks through a
   directory that has become a symbolic link, either: creating a link, or
   renaming anything but a regular file, in the writable layer empties it.
+  A link made in a layer directly, around the union, is a direct change
+  like any other. Until the cache drops the entries it shadows, only the
+  layer's own confinement keeps a walk from following it out (basefs
+  confines physically from Go 1.25; see issue #12).
 - **The Stat cache** holds `Stat` and `Lstat` results. It is dropped for
   paths changed through the union, by the path the caller gave and the
   path it resolved to. It is not dropped for changes made to a layer
