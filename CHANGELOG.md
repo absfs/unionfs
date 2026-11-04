@@ -53,6 +53,22 @@ follows such a link wherever the union hands it a path through it.
   or renaming anything there but a regular file, now empties the lookup
   cache. The lookup cache is new in this release, so no released version
   has this one.
+- With `WithLookupCache`, a link made in the writable layer directly,
+  around the union (by another program on the host), where a cached
+  directory had been, at its own spelling or another the host takes for
+  it, carried changes out of the layer whenever the layer did not confine
+  physically (basefs before Go 1.25, on Windows, or `NewFSUnconfined`):
+  the cache still resolved the directory as it was, and `OpenFile` with
+  `O_TRUNC`, `Chmod`, `Truncate`, `Remove`, `Rename`, `Create` and `Mkdir`
+  under it reached the link's target (issue #12). Every change the union
+  makes in the writable layer with the lookup cache on now first checks,
+  one `Lstat` per directory, that every directory above the name is still
+  a directory there; when one is not, the cache is emptied and the change
+  fails with `ESTALE`, so a retry resolves the link through the union. A
+  layer basefs reports `Confined` is not checked. Reads through such a
+  link (`Stat`, `Open` for reading, `ReadDir`) are not checked, and
+  follow it until the cache's entries for the directory expire or are
+  invalidated.
 - On a host that folds case, the union's existing markers were reachable
   through another spelling of their names: lookups decided that a name was
   reserved by its lowercase `.wh.` prefix only, and the host took `.WH.x`

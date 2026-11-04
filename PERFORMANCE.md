@@ -82,6 +82,25 @@ made to a layer directly show once the entries expire, or after
 path the direct change created or removed: a directory added to the upper
 also changes where every name under it is found).
 
+A change with the lookup cache on also checks that every directory above
+the name it changes is still a directory in the writable layer, one
+`Lstat` each, so that a link made there around the union is not followed
+out of the layer (issue #12). A layer basefs reports `Confined` (basefs
+over osfs from Go 1.25 on Unix) skips the check. `BenchmarkCachedWrite`
+changes a file four directories down in the upper of two host-directory
+layers (µs/op, Apple M3 Max under load, so differences under about 30% are
+noise):
+
+| basefs     | Change      | No cache | Lookup cache, before | Lookup cache |
+| ---------- | ----------- | -------- | -------------------- | ------------ |
+| Confined   | `Chmod`     | 189      | 108                  | 105          |
+| Confined   | open, write | 192      | 104                  | 110          |
+| Unconfined | `Chmod`     | 25       | 13                   | 18           |
+| Unconfined | open, write | 25       | 14                   | 20           |
+
+A confined basefs is slower throughout because `os.Root` resolves a path
+one directory at a time.
+
 A Stat cache holds at most `maxEntries` results (1000 with
 `WithStatCache`), and `Stat` and `Lstat` results share that bound. A
 working set larger than the bound, looked up in turn, misses on every call.

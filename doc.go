@@ -191,7 +191,15 @@ changed there the cache is emptied and the change fails, with ENOENT when
 the name is gone and ESTALE otherwise, so a retry acts on the current
 view. The cache never walks through a directory that has since become a
 symbolic link: creating a link in the writable layer, or renaming
-anything there but a regular file, empties the cache.
+anything there but a regular file, empties the cache. A link made in the
+writable layer directly, around the union, never carries a change out of
+it: before the union changes anything in that layer it checks that every
+directory above the name is still a directory there, one Lstat each, and
+if not it empties the cache and fails with ESTALE. The check is skipped
+for a layer basefs reports Confined, whose host refuses to follow a link
+out of it. Reads are not checked: until the cache drops the entries such a
+link shadows, lookups, opens for reading and listings through them follow
+it, out of a layer that does not confine physically.
 
 WithStatCache and WithCacheConfig enable a cache of Stat and Lstat
 results. Changes made through the union drop the entries at and under the

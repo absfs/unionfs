@@ -821,7 +821,7 @@ func (ufs *UnionFS) Chtimes(name string, atime, mtime time.Time) error {
 func (ufs *UnionFS) Lchown(name string, uid, gid int) error {
 	ufs.mu.Lock()
 	defer ufs.mu.Unlock()
-	l, hasLchown := ufs.layers[0].fs.(lchowner)
+	l, hasLchown := ufs.upperLchowner()
 	return ufs.changeAttrs("lchown", name, false, nil, func(p string, n *node) error {
 		if hasLchown {
 			return l.Lchown(p, uid, gid)

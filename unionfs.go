@@ -172,8 +172,15 @@ func WithCacheConfig(enabled bool, statTTL, negativeTTL time.Duration, maxEntrie
 // behind an opaque directory) the cache is emptied and the change fails,
 // with ENOENT when the name is gone and ESTALE otherwise, so that a retry
 // acts on the current view. A cached directory is never walked through
-// once a link may have replaced it: creating a link in the writable layer,
-// or renaming anything there but a regular file, empties the cache.
+// once a link made through the union may have replaced it: creating a link
+// in the writable layer, or renaming anything there but a regular file,
+// empties the cache. A link made in the writable layer directly never
+// carries a change out of it: every change there first checks, one Lstat
+// per directory, that the directories above the name are still
+// directories, and fails with ESTALE, emptying the cache, when one is not.
+// The check is skipped for a layer basefs reports Confined. Reads are not
+// checked, so until the entries expire they may follow such a link out of
+// a layer that is not confined physically.
 func WithLookupCache(ttl time.Duration, maxEntries int) Option {
 	return func(ufs *UnionFS) {
 		ufs.lc = nil

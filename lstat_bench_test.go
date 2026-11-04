@@ -161,3 +161,71 @@ func BenchmarkLstatWorkingSet(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkCachedWrite measures changes through a two-layer union of host
+// directories, with no cache and with the lookup cache, to a file four
+// directories down that the writable layer already has: a Chmod, and an
+// open for writing. With the lookup cache, a writable layer basefs does
+// not confine has the four directories checked first (see confirmDirs).
+func BenchmarkCachedWrite(b *testing.B) {
+	if runtime.GOOS == "windows" {
+		b.Skip("host-directory layers are exercised on Unix")
+	}
+	host, err := osfs.NewFS()
+	if err != nil {
+		b.Fatal(err)
+	}
+	const p = "/a/b/c/d/f"
+	for _, confine := range []bool{true, false} {
+		root, err := filepath.EvalSymlinks(b.TempDir())
+		if err != nil {
+			b.Fatal(err)
+		}
+		newFS, kind := basefs.NewFSUnconfined, "Unconfined"
+		if confine {
+			newFS, kind = basefs.NewFS, "Confined"
+		}
+		var layers [2]absfs.SymlinkFileSystem
+		for i, d := range []string{"upper", "lower"} {
+			if err := os.Mkdir(filepath.Join(root, d), 0755); err != nil {
+				b.Fatal(err)
+			}
+			if layers[i], err = newFS(host, filepath.Join(root, d)); err != nil {
+				b.Fatal(err)
+			}
+		}
+		if err := layers[0].MkdirAll("/a/b/c/d", 0755); err != nil {
+			b.Fatal(err)
+		}
+		if err := writeFile(layers[0], p, []byte("x"), 0644); err != nil {
+			b.Fatal(err)
+		}
+		for _, c := range []struct {
+			name string
+			opts []Option
+		}{
+			{"NoCache", nil},
+			{"LookupCache", []Option{WithLookupCache(time.Hour, 0)}},
+		} {
+			ufs := New(append([]Option{WithWritableLayer(layers[0]), WithReadOnlyLayer(layers[1])}, c.opts...)...)
+			b.Run(kind+"/"+c.name+"/Chmod", func(b *testing.B) {
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					if err := ufs.Chmod(p, 0644); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+			b.Run(kind+"/"+c.name+"/OpenWrite", func(b *testing.B) {
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					f, err := ufs.OpenFile(p, os.O_WRONLY, 0)
+					if err != nil {
+						b.Fatal(err)
+					}
+					f.Close()
+				}
+			})
+		}
+	}
+}

@@ -7,8 +7,10 @@ import (
 	"os"
 	"path"
 	"syscall"
+	"time"
 
 	"github.com/absfs/absfs"
+	"github.com/absfs/basefs"
 )
 
 // chmodBits are the mode bits Chmod applies: permissions plus setuid,
@@ -18,7 +20,9 @@ const chmodBits = os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky
 // upper returns the writable layer's filesystem, for writing to it.
 // Callers check that the union has a writable layer first. With the lookup
 // cache on, every call through it that adds, removes or renames an entry
-// drops the cached lookups the change affects (see touched).
+// drops the cached lookups the change affects (see touched), and every
+// call that changes anything first checks the directories it goes through
+// (see confirmDirs).
 func (ufs *UnionFS) upper() absfs.FileSystem {
 	if ufs.lc == nil {
 		return ufs.layers[0].fs
@@ -36,6 +40,16 @@ func (ufs *UnionFS) upperSymlinker() (symlinker, bool) {
 	return s, ok
 }
 
+// upperLchowner returns the writable layer's Lchown, and whether it has
+// one, as upper returns the layer.
+func (ufs *UnionFS) upperLchowner() (lchowner, bool) {
+	if _, ok := ufs.layers[0].fs.(lchowner); !ok {
+		return nil, false
+	}
+	l, ok := ufs.upper().(lchowner)
+	return l, ok
+}
+
 // upperFS is the writable layer as the union writes to it with the lookup
 // cache on.
 type upperFS struct {
@@ -43,7 +57,52 @@ type upperFS struct {
 	ufs *UnionFS
 }
 
+// confirmDirs checks, before the writable layer is handed name to change
+// anything at it, that every directory above name is still a directory
+// there, not a symbolic link or anything else. The union resolves links
+// itself, so a path it hands a layer never goes through one; but a path
+// resolved from the lookup cache may go through a directory that has since
+// been replaced by a link around the union, at the spelling the union
+// cached or another the host takes for it ("D" for "d"), and a host that
+// does not confine the layer physically (basefs before Go 1.25, or
+// NewFSUnconfined) would follow that link wherever it leads, even out of
+// the layer. When a directory is not one, the cache is emptied and the
+// change fails with ESTALE, so a retry resolves the link through the
+// union. A directory that is missing, or cannot be checked, fails the
+// change with the Lstat's error. It costs one Lstat per directory above
+// name.
+//
+// A layer basefs reports Confined (basefs over osfs from Go 1.25 on Unix)
+// is not checked: the host itself refuses to follow a link out of it, and
+// its Lstat walks the path one directory at a time, so the check would cost
+// the square of the depth. A link made around the union that stays inside
+// such a layer is a direct change to the layer like any other.
+func (u upperFS) confirmDirs(op, name string) error {
+	if basefs.Confined(u.FileSystem) {
+		return nil
+	}
+	p := cleanPath(name)
+	for i := 1; i < len(p); i++ {
+		if p[i] != '/' {
+			continue
+		}
+		info, err := u.ufs.layerLstat(0, p[:i])
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			continue
+		}
+		u.ufs.lc.clear()
+		return &os.PathError{Op: op, Path: name, Err: syscall.ESTALE}
+	}
+	return nil
+}
+
 func (u upperFS) OpenFile(name string, flag int, perm os.FileMode) (absfs.File, error) {
+	if err := u.confirmDirs("open", name); err != nil {
+		return nil, err
+	}
 	if flag&os.O_CREATE != 0 {
 		defer u.ufs.touched(name)
 	}
@@ -51,16 +110,25 @@ func (u upperFS) OpenFile(name string, flag int, perm os.FileMode) (absfs.File, 
 }
 
 func (u upperFS) Mkdir(name string, perm os.FileMode) error {
+	if err := u.confirmDirs("mkdir", name); err != nil {
+		return err
+	}
 	defer u.ufs.touched(name)
 	return u.FileSystem.Mkdir(name, perm)
 }
 
 func (u upperFS) Remove(name string) error {
+	if err := u.confirmDirs("remove", name); err != nil {
+		return err
+	}
 	defer u.ufs.touched(name)
 	return u.FileSystem.Remove(name)
 }
 
 func (u upperFS) RemoveAll(name string) error {
+	if err := u.confirmDirs("removeall", name); err != nil {
+		return err
+	}
 	defer u.ufs.touched(name)
 	return u.FileSystem.RemoveAll(name)
 }
@@ -68,6 +136,12 @@ func (u upperFS) RemoveAll(name string) error {
 // Rename empties the lookup cache when it moves anything but a regular
 // file: see Symlink. A directory carries the links inside it.
 func (u upperFS) Rename(oldname, newname string) error {
+	if err := u.confirmDirs("rename", oldname); err != nil {
+		return err
+	}
+	if err := u.confirmDirs("rename", newname); err != nil {
+		return err
+	}
 	if info, err := u.ufs.layerLstat(0, oldname); err != nil || !info.Mode().IsRegular() {
 		defer u.ufs.lc.clear()
 	}
@@ -83,13 +157,54 @@ func (u upperFS) Rename(oldname, newname string) error {
 // where it folds case, NFC and NFD forms where it normalises Unicode), so
 // dropping the entries of the name the link is made at can leave a cached
 // directory of another spelling that the host now resolves through the
-// link. A link reaches the writable layer only through Symlink or Rename,
-// and both empty the cache, so a cached directory is never one the host
-// would follow a link for.
+// link. A link reaches the writable layer through the union only by
+// Symlink or Rename, and both empty the cache, so a cached directory is
+// never one the host would follow a link the union made for. A link made
+// around the union is caught by confirmDirs before anything is changed
+// through it.
 func (u upperFS) Symlink(oldname, newname string) error {
+	if err := u.confirmDirs("symlink", newname); err != nil {
+		return err
+	}
 	defer u.ufs.lc.clear()
 	defer u.ufs.touched(newname)
 	return u.FileSystem.(symlinker).Symlink(oldname, newname)
+}
+
+// Lchown is the writable layer's; upperLchowner checks that it has one.
+func (u upperFS) Lchown(name string, uid, gid int) error {
+	if err := u.confirmDirs("lchown", name); err != nil {
+		return err
+	}
+	return u.FileSystem.(lchowner).Lchown(name, uid, gid)
+}
+
+func (u upperFS) Chmod(name string, mode os.FileMode) error {
+	if err := u.confirmDirs("chmod", name); err != nil {
+		return err
+	}
+	return u.FileSystem.Chmod(name, mode)
+}
+
+func (u upperFS) Chown(name string, uid, gid int) error {
+	if err := u.confirmDirs("chown", name); err != nil {
+		return err
+	}
+	return u.FileSystem.Chown(name, uid, gid)
+}
+
+func (u upperFS) Chtimes(name string, atime, mtime time.Time) error {
+	if err := u.confirmDirs("chtimes", name); err != nil {
+		return err
+	}
+	return u.FileSystem.Chtimes(name, atime, mtime)
+}
+
+func (u upperFS) Truncate(name string, size int64) error {
+	if err := u.confirmDirs("truncate", name); err != nil {
+		return err
+	}
+	return u.FileSystem.Truncate(name, size)
 }
 
 // touched drops the lookup cache's entries that a change to the entry at

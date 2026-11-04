@@ -311,8 +311,8 @@ func TestLookupCacheHostAliasedDirBecomesLink(t *testing.T) {
 			// basefs, confined to its root, refuses to move one there
 			// (it judges the link where it lands), so its confinement is
 			// the guard here. The union's own cache guard is covered on
-			// a folding memfs above. A link made around the union is a
-			// direct layer change the cache does not see (issue #12).
+			// a folding memfs above, and a link made around the union in
+			// TestLookupCacheOutOfBandLink (issue #12).
 			must(t, ufs.Mkdir("/stage", 0755))
 			must(t, ufs.Symlink("../outside", "/stage/l"))
 			if err := ufs.Rename("/stage/l", tc.alias); err == nil {
