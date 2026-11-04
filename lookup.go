@@ -35,6 +35,9 @@ type node struct {
 	parent    *node       // nil for the root
 	meta      os.FileInfo // the metadata marker's info, or nil
 	metaLayer int         // the layer that holds meta
+	// exact is set when path's last element is known to be spelled as
+	// layers[0] stores it: it came from that layer's listing (see nameIn).
+	exact bool
 }
 
 // top returns the index of the layer the node's info came from.
@@ -459,24 +462,30 @@ func (ufs *UnionFS) parentFrom(op string, start *node, p string, links *int) (*n
 // whether deleting name needs a whiteout, and creating a directory there
 // needs an opaque marker.
 func (ufs *UnionFS) lowerHas(dir *node, name string) (bool, error) {
+	li, err := ufs.lowerLayer(dir, name)
+	return li >= 0, err
+}
+
+// lowerLayer is lowerHas, returning the layer that would show name, or -1.
+// With an error it returns the layer that failed.
+func (ufs *UnionFS) lowerLayer(dir *node, name string) (int, error) {
 	p := path.Join(dir.path, name)
 	for k, li := range dir.layers {
 		if li == 0 && ufs.writableLayer != nil {
 			continue
 		}
-		found, err := ufs.layerProbe(li, p)
-		if err != nil || found {
-			return found, err
+		if found, err := ufs.layerProbe(li, p); err != nil || found {
+			return li, err
 		}
 		if k == len(dir.layers)-1 || !ufs.honours(li) {
 			continue
 		}
 		whited, err := ufs.layerProbe(li, WhiteoutName(p))
 		if err != nil || whited {
-			return false, err
+			return -1, err
 		}
 	}
-	return false, nil
+	return -1, nil
 }
 
 // honours reports whether the markers in layer li count: in every layer by
@@ -500,8 +509,20 @@ func reservedErr(n *node) error {
 // Entries from upper layers shadow those below; a whiteout in a layer hides
 // its name in the layers below it; whiteouts and opaque markers themselves
 // are never listed, nor is any other name child refuses as reserved.
+//
+// Names are matched byte for byte, except that a lower entry whose name a
+// host may take for one a layer above lists, hides or changes under
+// another spelling ("d" below a whiteout ".wh.D", on a host that folds
+// case) is listed only if a lookup of it finds it: see aliasKey.
 func (ufs *UnionFS) listDir(dir *node) ([]fs.DirEntry, error) {
-	seen := make(map[string]bool)
+	// Each name is one of the names listed or hidden so far (seenName),
+	// the alias key of a name the layers above list, hide or change
+	// (aboveKey), or both: most names are their own key.
+	const (
+		seenName = 1 << iota
+		aboveKey
+	)
+	names := make(map[string]uint8)
 	metas := make(map[string]fs.DirEntry) // metadata markers in the layers above
 	var out []fs.DirEntry
 	for k, li := range dir.layers {
@@ -514,6 +535,12 @@ func (ufs *UnionFS) listDir(dir *node) ([]fs.DirEntry, error) {
 				continue
 			}
 			return nil, err
+		}
+		// The names this layer lists, hides or changes are above the
+		// layers below it.
+		var mark uint8
+		if k < len(dir.layers)-1 {
+			mark = aboveKey
 		}
 		var hidden []string
 		var marked []fs.DirEntry
@@ -530,22 +557,48 @@ func (ufs *UnionFS) listDir(dir *node) ([]fs.DirEntry, error) {
 				}
 				continue
 			}
-			if seen[name] {
+			f := names[name]
+			if f&seenName != 0 {
 				continue
 			}
-			seen[name] = true
-			if m, ok := metas[name]; ok && e.Type().IsRegular() {
-				e = metaDirEntry{DirEntry: e, meta: m}
+			key := aliasKey(name)
+			aliased := f&aboveKey != 0
+			if key == name {
+				names[name] = f | seenName | mark
+			} else {
+				names[name] = f | seenName
+				aliased = names[key]&aboveKey != 0
+				names[key] |= mark
+			}
+			if m, ok := metas[name]; ok {
+				if e.Type().IsRegular() {
+					e = metaDirEntry{DirEntry: e, meta: m}
+				}
+			} else if aliased {
+				c, err := ufs.child(dir, name)
+				switch {
+				case err == nil && c.top() == li:
+					if c.meta != nil && e.Type().IsRegular() {
+						e = metaDirEntry{DirEntry: e, meta: fs.FileInfoToDirEntry(c.meta)}
+					}
+				case err == nil || isNotExist(err) || errors.Is(err, syscall.EPERM):
+					// Shadowed by, or hidden under, another spelling.
+					continue
+				default:
+					return nil, err
+				}
 			}
 			out = append(out, e)
 		}
 		for _, h := range hidden {
-			seen[h] = true
+			names[h] |= seenName
+			names[aliasKey(h)] |= mark
 		}
 		for _, m := range marked {
 			t, _ := MetaTarget(m.Name())
 			if _, ok := metas[t]; !ok {
 				metas[t] = m
+				names[aliasKey(t)] |= mark
 			}
 		}
 	}

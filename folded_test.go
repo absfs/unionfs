@@ -191,15 +191,17 @@ func TestFoldedReservedNamesInLowers(t *testing.T) {
 }
 
 // staleUnion returns a union with the lookup cache over layers that fold
-// case, with lower /d/x, /d/sub/f and /d/m, all of them cached under the
-// spelling "/d".
+// case, with lower /D/x, /D/sub/f and /D/m, all of them cached under the
+// spelling "/d". The lower stores the directory as "D", the spelling the
+// tests change it through: a change through the stored spelling drops only
+// that spelling's cached entries.
 func staleUnion(t *testing.T, kind string) (*UnionFS, absfs.SymlinkFileSystem) {
 	t.Helper()
 	upper, lower := foldedLayers(t, kind)
-	mustMkdirAll(t, lower, "/d/sub")
-	put(t, lower, "/d/x", "hidden lower data")
-	put(t, lower, "/d/sub/f", "hidden f")
-	put(t, lower, "/d/m", "m")
+	mustMkdirAll(t, lower, "/D/sub")
+	put(t, lower, "/D/x", "hidden lower data")
+	put(t, lower, "/D/sub/f", "hidden f")
+	put(t, lower, "/D/m", "m")
 	ufs := New(WithWritableLayer(upper), WithReadOnlyLayer(lower), WithLookupCache(time.Hour, 0))
 	for _, p := range []string{"/d/x", "/d/sub/f", "/d/m"} {
 		lstat(t, ufs, p)

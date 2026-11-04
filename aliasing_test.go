@@ -18,12 +18,13 @@ import (
 	"github.com/absfs/osfs"
 )
 
-// foldFS is a layer over memfs that folds the case of every name, as a
-// macOS or Windows host does (it does not preserve case either, which the
-// tests here do not need). It fails the test whenever the union hands it a
-// path that a host would resolve through a symbolic link: one with a link
-// among its directory elements, or, for an operation that follows a final
-// link, a link at its end.
+// foldFS is a layer over memfs that folds the case of names and preserves
+// it, as a macOS or Windows host does: a name resolves to the entry whose
+// name equals it in any case (and, as on macOS, in either Unicode form of
+// "é"), and a new entry keeps the spelling it was created with. It fails the test whenever the union hands it a path that a
+// host would resolve through a symbolic link: one with a link among its
+// directory elements, or, for an operation that follows a final link, a
+// link at its end.
 type foldFS struct {
 	absfs.SymlinkFileSystem
 	t *testing.T
@@ -73,16 +74,29 @@ func shortOf(name string) string {
 	return s
 }
 
-// unshort returns the name of the entry in directory dir that element e
-// names: e itself, or the entry whose short name e is.
-func (f *foldFS) unshort(dir, e string) string {
+// decompose stands in for Unicode normalisation in foldFS: it decomposes
+// the one letter the tests spell both ways.
+var decompose = strings.NewReplacer("\u00e9", "e\u0301", "\u00c9", "E\u0301").Replace
+
+// stored returns the name of the entry in directory dir that element e
+// names: e itself when an entry has exactly that name, else the entry whose
+// name, or short name where they are on, equals e in any case and either
+// form of "é", as on macOS, else e (a new name).
+func (f *foldFS) stored(dir, e string) string {
 	if _, err := f.SymlinkFileSystem.Lstat(path.Join(dir, e)); err == nil {
 		return e
 	}
 	ents, _ := f.SymlinkFileSystem.ReadDir(dir)
 	for _, ent := range ents {
-		if shortOf(ent.Name()) == e {
+		if strings.EqualFold(decompose(ent.Name()), decompose(e)) {
 			return ent.Name()
+		}
+	}
+	if f.short {
+		for _, ent := range ents {
+			if strings.EqualFold(shortOf(ent.Name()), e) {
+				return ent.Name()
+			}
 		}
 	}
 	return e
@@ -92,18 +106,15 @@ func (f *foldFS) unshort(dir, e string) string {
 // passes through no link, and ends at none when follows is set.
 func (f *foldFS) fold(op, p string, follows bool) string {
 	f.t.Helper()
-	p = strings.ToLower(p)
 	elems := strings.Split(strings.Trim(path.Clean(p), "/"), "/")
 	cur := "/"
 	for i, e := range elems {
 		if e == "" {
 			break
 		}
-		if f.short {
-			e = f.unshort(cur, e)
-			elems[i] = e
-			p = "/" + strings.Join(elems, "/")
-		}
+		e = f.stored(cur, e)
+		elems[i] = e
+		p = "/" + strings.Join(elems, "/")
 		cur = path.Join(cur, e)
 		if i == len(elems)-1 && !follows {
 			break
@@ -151,8 +162,14 @@ func (f *foldFS) RemoveAll(p string) error {
 	return f.SymlinkFileSystem.RemoveAll(f.fold("removeall", p, false))
 }
 
+// Rename of an entry to another spelling of its own name changes the
+// name's spelling, as on a host.
 func (f *foldFS) Rename(o, n string) error {
-	return f.SymlinkFileSystem.Rename(f.fold("rename", o, false), f.fold("rename", n, false))
+	fo, fn := f.fold("rename", o, false), f.fold("rename", n, false)
+	if fo == fn {
+		fn = path.Join(path.Dir(fn), path.Base(n))
+	}
+	return f.SymlinkFileSystem.Rename(fo, fn)
 }
 
 func (f *foldFS) Chmod(p string, m os.FileMode) error {

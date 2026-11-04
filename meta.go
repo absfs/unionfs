@@ -156,9 +156,8 @@ func metaFits(p string) bool {
 // it created is removed again if set fails. A node from the lookup cache is
 // checked against the layers before a marker is created (see current).
 func (ufs *UnionFS) setMeta(n *node, set func(marker string) error) error {
-	m := MetaMarkerName(n.path)
 	if ufs.upperMeta(n) {
-		return set(m)
+		return set(MetaMarkerName(n.path))
 	}
 	if err := reservedErr(n); err != nil {
 		return err
@@ -172,10 +171,17 @@ func (ufs *UnionFS) setMeta(n *node, set func(marker string) error) error {
 		return err
 	}
 	return ufs.keepDir(n.parent.path, func() error {
-		if err := ufs.createMeta(m, n.info); err != nil {
+		// The marker is spelled after the name n's layer stores it under
+		// (see storedName).
+		stored := MetaPrefix + ufs.nameIn(n, n.top())
+		if err := ufs.createMeta(path.Join(n.parent.path, stored), n.info); err != nil {
 			return err
 		}
-		if err := set(m); err != nil {
+		m, err := ufs.respell(n.parent.path, stored, MetaPrefix+path.Base(n.path))
+		if err == nil {
+			err = set(m)
+		}
+		if err != nil {
 			_ = ufs.upper().Remove(m)
 			return err
 		}

@@ -446,18 +446,18 @@ func (ufs *UnionFS) removeNode(n *node, all bool) error {
 	if err := reservedErr(n); err != nil {
 		return err
 	}
-	needWhiteout, err := ufs.lowerHas(n.parent, path.Base(n.path))
+	li, err := ufs.lowerLayer(n.parent, path.Base(n.path))
 	if err != nil {
 		return err
 	}
-	if !needWhiteout {
+	if li < 0 {
 		return ufs.removeUpper(n, all)
 	}
 	if err := ufs.ensureUpperDir(n.parent); err != nil {
 		return err
 	}
-	wh := WhiteoutName(n.path)
-	if err := ufs.writeMarker(wh); err != nil {
+	wh, err := ufs.writeWhiteout(n, li)
+	if err != nil {
 		return err
 	}
 	if !ufs.inUpper(n) {
@@ -538,6 +538,7 @@ func (ufs *UnionFS) RemoveAll(name string) error {
 	for _, e := range ents {
 		c, err := ufs.child(n, e.Name())
 		if err == nil {
+			c.exact = true
 			err = ufs.removeNode(c, true)
 		}
 		if err != nil {
@@ -587,13 +588,8 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 	if reservedForClient(base) {
 		return fail(syscall.EPERM)
 	}
-	dp := path.Join(dstDir.path, base)
-	defer ufs.invalidate(op, np, src.path, dp)
-	if dp == src.path {
-		return nil
-	}
 	isDir := src.info.IsDir()
-	if isDir && strings.HasPrefix(dp, src.path+"/") {
+	if isDir && strings.HasPrefix(path.Join(dstDir.path, base), src.path+"/") {
 		return fail(syscall.EINVAL)
 	}
 	dst, err := ufs.child(dstDir, base)
@@ -602,6 +598,23 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 		dst = nil
 	case err != nil:
 		return fail(err)
+	case dst.top() == src.top() && sameEntry(dst.info, src.info):
+		// The source itself, by its own name or by another spelling of
+		// it on a host that takes one for the other: the spelling
+		// changes, if anything. A directory does not replace itself.
+		if isDir {
+			dst = nil
+		}
+	case !ufs.inUpper(dst):
+		// A host replacing an entry keeps the entry's spelling, and so
+		// does the union for one only lower layers have: renaming onto
+		// "/E" over a lower "e" writes "e".
+		base = ufs.nameIn(dst, dst.top())
+	}
+	dp := path.Join(dstDir.path, base)
+	defer ufs.invalidate(op, np, src.path, dp)
+	if dp == src.path {
+		return nil
 	}
 	if dst != nil {
 		switch {
@@ -620,10 +633,11 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 		}
 	}
 
-	srcLower, err := ufs.lowerHas(src.parent, path.Base(src.path))
+	srcLayer, err := ufs.lowerLayer(src.parent, path.Base(src.path))
 	if err != nil {
 		return fail(err)
 	}
+	srcLower := srcLayer >= 0
 	dstLower, err := ufs.lowerHas(dstDir, base)
 	if err != nil {
 		return fail(err)
@@ -648,9 +662,9 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 	// Whiteout the old name before the move, as removeNode does, so that a
 	// failure leaves the merged view as it was.
 	up := ufs.upper()
-	srcWh := WhiteoutName(src.path)
+	var srcWh string
 	if srcLower {
-		if err := ufs.writeMarker(srcWh); err != nil {
+		if srcWh, err = ufs.writeWhiteout(src, srcLayer); err != nil {
 			return fail(err)
 		}
 	}

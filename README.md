@@ -168,8 +168,8 @@ below). The format, exactly:
 | `dir/.wh..wh.unionfs.<n>`, a file or directory   | nothing: a leftover from a failed operation, safe to delete                                                                |
 
 `WhiteoutPrefix` is `".wh."` and `OpaqueWhiteout` is `".wh.__dir_opaque"`.
-A whiteout and an entry of the same name never coexist in the writable
-layer once an operation has finished. Marker files never show in the
+A whiteout and an entry of the same name, byte for byte, never coexist in
+the writable layer once an operation has finished. Marker files never show in the
 merged view, and the union refuses to create a name starting with `.wh.`
 in any ASCII case (`.WH.`, `.Wh.`, `.wH.`), with EPERM: a host that folds
 case takes `.WH.x` for the marker `.wh.x`. For the same reason no such
@@ -188,6 +188,24 @@ so a name of that shape (up to eight bytes ending in `~` and digits, then
 optionally `.` and up to three more) that a layer whose markers count
 resolves but does not list under that name fails with EPERM, for any
 operation. See [Caveats](#caveats).
+
+**Spelling.** A host may take two spellings for one name: `d` and `D` where
+it folds case (macOS and Windows by default), the composed and decomposed
+forms of `é` on macOS, even on a case-sensitive volume. A changeset reader
+matches markers to names byte for byte, so whenever the union writes a
+whiteout, a metadata marker or a copy-up for an entry a lower layer
+already has, it spells it as that layer stores the entry, not as the
+caller did: `RemoveAll("/D")` of a lower `d` writes `.wh.d`, `Chmod("/D")`
+writes `.wh..wh.meta.d`, a write through `/D` copies up as `d`, and
+`Rename("/D", "/e")` whites out `d`. Renaming onto an entry only lower
+layers have keeps the entry's spelling, as a host replacing an entry does.
+A name new to the merged view keeps the caller's spelling, including a
+spelling of a deleted lower name that differs from the lower's: deleting
+`d` and creating `D` leaves `.wh.d` and `D` side by side, which a reader
+takes as "d deleted, D created". So does renaming an entry to another
+spelling of its own name. A writable layer that does not fold over a lower
+layer that does gets the caller's spelling, as before, since only that one
+reaches the entry there.
 
 Names starting with `.wh..wh.` are reserved for metadata, as in AUFS and
 OCI: they are hidden but delete nothing, and `WhiteoutTarget` returns false
@@ -401,10 +419,20 @@ change fails with `ErrNoWritableLayer`.
   volume (`fsutil 8dot3name set <volume> 1`; `fsutil 8dot3name query`
   shows the setting) also removes the short names newly created markers
   would get.
-- **A whiteout spelled differently from the lower name** (`RemoveAll("/D")`
-  of a lower `d`, on a host that folds case) hides `d` from lookups, but
-  `ReadDir` still lists `d`: listing matches whiteouts to names byte for
-  byte.
+- **Markers spelled differently from the lower name.** Before v1.1.0 the
+  union spelled whiteouts, metadata markers and copy-ups as the caller
+  did, so a writable layer from then can hold `.wh.D` for a lower `d`
+  (see [Spelling](#the-upper-layer-as-a-changeset)). A host that folds
+  case takes it for `.wh.d`, and so does the union: lookups and `ReadDir`
+  agree that `d` is gone. A changeset reader matching byte for byte
+  records the deletion of `D` instead. Where two read-only layers spell
+  one name differently, the upper one's entry shows and a whiteout is
+  spelled after it. `ReadDir` matches names byte for byte, and looks up
+  a lower name only when a name listed, hidden or changed before it may
+  be another spelling of it, which costs one lookup per such name. Names
+  that differ only in letters outside ASCII count as possible spellings
+  of one another, so a directory of such names whose upper and lower
+  layers differ pays one lookup per lower name.
 - **A lower's own `.wh.` names vanish** by default, taken for markers.
   Check a lower with `ReservedNames`, or use
   `WithMarkersOnlyInWritableLayer` (see the changeset section).
@@ -437,8 +465,9 @@ change fails with `ErrNoWritableLayer`.
   above. A name removed from its layer is noticed at once. On a host that
   takes two spellings for one name (`d` and `D` where it folds case, the
   composed and decomposed forms of `é` on macOS), a change made through
-  one spelling drops only that spelling's entries, so the other may show
-  the old view until it expires. A write never makes that old view
+  one spelling drops only that spelling's entries and those of the
+  spelling the layer stores, so a third may show the old view until it
+  expires. A write never makes that old view
   permanent: a copy-up, or a new metadata marker, for an entry the cache
   resolved first checks it against the layers, and when the merged view
   has changed there (a lower file the other spelling's change whited out

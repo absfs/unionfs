@@ -76,6 +76,17 @@ Every change goes to the writable layer:
     then removed; one only the writable layer has is moved directly. The moved
     directory is made opaque when a lower layer has the new name, and the
     old name is whited out when a lower layer still has it.
+  - On a host that takes two spellings for one name ("d" and "D" where it
+    folds case, the composed and decomposed "é" on macOS), a whiteout,
+    metadata marker or copy-up for an entry a lower layer has is spelled
+    as that layer stores the entry, whatever spelling the caller used:
+    RemoveAll("/D") of a lower "d" writes ".wh.d", so that a changeset
+    reader matching markers to names byte for byte sees "d" deleted.
+    Renaming onto an entry only lower layers have keeps the entry's
+    spelling, as a host does. A name new to the merged view keeps the
+    caller's spelling; where it spells a deleted lower name otherwise, the
+    lower name's whiteout stays beside it. A writable layer that does not
+    fold over a lower that does gets the caller's spelling, as before.
 
 The read-only layers are never written to. A union built without
 WithWritableLayer is read-only: every change fails with ErrNoWritableLayer.
@@ -170,8 +181,9 @@ entries expire, or after InvalidateCache or InvalidateCacheTree of the
 topmost path the change created or removed, or ClearCache; a name removed
 from its layer is noticed at once. On a host that takes two spellings for
 one name (by case, or by Unicode normalisation on macOS), a change made
-through one spelling drops only that spelling's entries, so the other may
-show the old view until it expires. A write never makes that old view
+through one spelling drops only that spelling's entries and those of the
+spelling the layer stores, so a third may show the old view until it
+expires. A write never makes that old view
 permanent: a copy-up, or a new metadata marker, for an entry the cache
 resolved first checks it against the layers, and when the merged view has
 changed there the cache is emptied and the change fails, with ENOENT when

@@ -156,15 +156,20 @@ func (ufs *UnionFS) copyUpDir(n *node) error {
 	}
 	err := ufs.keepDir(n.parent.path, func() error {
 		up := ufs.upper()
-		if err := up.Mkdir(n.path, 0700); err != nil {
+		stored := ufs.nameIn(n, n.top())
+		p := path.Join(n.parent.path, stored)
+		if err := up.Mkdir(p, 0700); err != nil {
 			return err
 		}
-		if err := ufs.chmodUpper(n.path, n.info.Mode(), n.info.Mode()); err != nil {
-			_ = up.Remove(n.path)
-			return err
+		err := ufs.chmodUpper(p, n.info.Mode(), n.info.Mode())
+		if err == nil {
+			_ = up.Chtimes(p, n.info.ModTime(), n.info.ModTime())
+			_, err = ufs.respell(n.parent.path, stored, path.Base(n.path))
 		}
-		_ = up.Chtimes(n.path, n.info.ModTime(), n.info.ModTime())
-		return nil
+		if err != nil {
+			_ = up.Remove(p)
+		}
+		return err
 	})
 	if err != nil {
 		return fmt.Errorf("unionfs: copy up directory %s: %w", n.path, err)
@@ -333,20 +338,27 @@ func (ufs *UnionFS) copyUpCurrentFile(n *node, withData bool) error {
 		return &os.PathError{Op: "copyup", Path: n.path, Err: syscall.ENOTSUP}
 	}
 	err := ufs.keepDir(n.parent.path, func() error {
+		// The copy is spelled as n's layer stores it (see storedName).
+		stored := ufs.nameIn(n, n.top())
+		p := path.Join(n.parent.path, stored)
 		if isSymlink(n.info) {
 			s, _ := ufs.upperSymlinker()
-			return s.Symlink(target, n.path)
-		}
-		if err := ufs.copyUpRegular(n, withData); err != nil {
+			if err := s.Symlink(target, p); err != nil {
+				return err
+			}
+		} else if err := ufs.copyUpRegular(n, p, withData); err != nil {
 			return err
 		}
-		// The copy now carries the metadata marker's changes, so the
-		// marker goes; if it cannot, neither does the copy.
-		if err := ufs.dropMeta(n); err != nil {
-			_ = ufs.upper().Remove(n.path)
-			return err
+		p, err := ufs.respell(n.parent.path, stored, path.Base(n.path))
+		if err == nil && !isSymlink(n.info) {
+			// The copy now carries the metadata marker's changes, so
+			// the marker goes; if it cannot, neither does the copy.
+			err = ufs.dropMeta(n)
 		}
-		return nil
+		if err != nil {
+			_ = ufs.upper().Remove(p)
+		}
+		return err
 	})
 	if err != nil {
 		return err
@@ -355,16 +367,16 @@ func (ufs *UnionFS) copyUpCurrentFile(n *node, withData bool) error {
 	return nil
 }
 
-// copyUpRegular copies the regular file n into the writable layer, its
+// copyUpRegular copies the regular file n into the writable layer at p, its
 // contents only when withData is set, and removes the copy if that fails.
 // The copy gets n's mode and modification time, a metadata marker's where
 // one changes n, and the marker's owner too where the layers allow it.
-func (ufs *UnionFS) copyUpRegular(n *node, withData bool) error {
+func (ufs *UnionFS) copyUpRegular(n *node, p string, withData bool) error {
 	up := ufs.upper()
 	mode := n.info.Mode()
 	// Exclusive: the writable layer has nothing at n.path, or n would be
 	// its, and a link there must not be followed.
-	dst, err := up.OpenFile(n.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	dst, err := up.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return fmt.Errorf("unionfs: copy up %s: %w", n.path, err)
 	}
@@ -377,17 +389,17 @@ func (ufs *UnionFS) copyUpRegular(n *node, withData bool) error {
 	if n.meta != nil && err == nil {
 		// Before the mode: see createMeta.
 		if uid, gid, ok := ownerOf(n.meta); ok {
-			_ = up.Chown(n.path, uid, gid)
+			_ = up.Chown(p, uid, gid)
 		}
 	}
 	if err == nil {
-		err = ufs.chmodUpper(n.path, mode, mode)
+		err = ufs.chmodUpper(p, mode, mode)
 	}
 	if err != nil {
-		_ = up.Remove(n.path)
+		_ = up.Remove(p)
 		return fmt.Errorf("unionfs: copy up %s: %w", n.path, err)
 	}
-	_ = up.Chtimes(n.path, n.info.ModTime(), n.info.ModTime())
+	_ = up.Chtimes(p, n.info.ModTime(), n.info.ModTime())
 	return nil
 }
 
@@ -440,6 +452,7 @@ func (ufs *UnionFS) materializeCurrent(d *node) error {
 		if err != nil {
 			return err
 		}
+		c.exact = true
 		switch {
 		case c.info.IsDir():
 			err = ufs.materializeCurrent(c)
@@ -591,11 +604,36 @@ func (ufs *UnionFS) writeMarker(p string) error {
 	return f.Close()
 }
 
+// writeWhiteout writes the whiteout that deletes node n, which lower layer
+// li has, spelled after the name li stores n under (see storedName) unless
+// the writable layer would not take n's own spelling for that (see
+// respell). It returns the whiteout's path.
+func (ufs *UnionFS) writeWhiteout(n *node, li int) (string, error) {
+	dir, stored := n.parent.path, ufs.nameIn(n, li)
+	wh := path.Join(dir, WhiteoutPrefix+stored)
+	if err := ufs.writeMarker(wh); err != nil {
+		return "", err
+	}
+	p, err := ufs.respell(dir, WhiteoutPrefix+stored, WhiteoutPrefix+path.Base(n.path))
+	if err != nil {
+		_ = ufs.upper().Remove(wh)
+		return "", err
+	}
+	return p, nil
+}
+
 // dropWhiteout removes the whiteout for p from the writable layer, if any.
+// A whiteout the writable layer takes for p's but stores under another
+// spelling ("dir/.wh.d" for p "dir/D", on a host that folds case) stays: it
+// deletes the lower entry of that spelling, which the new entry at p does
+// not replace byte for byte, and a changeset records both.
 func (ufs *UnionFS) dropWhiteout(p string) error {
 	wh := WhiteoutName(p)
 	if found, err := ufs.layerProbe(0, wh); err != nil || !found {
 		return err
+	}
+	if base := path.Base(wh); ufs.storedName(0, path.Dir(wh), base) != base {
+		return nil
 	}
 	if err := ufs.upper().Remove(wh); err != nil && !isNotExist(err) {
 		return err

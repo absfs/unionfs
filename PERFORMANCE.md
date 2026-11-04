@@ -323,6 +323,18 @@ Whiteouts are efficient - don't hesitate to use `Remove()`/`RemoveAll()`.
 `RemoveAll` of a tree a lower layer has writes a single whiteout, whatever
 the tree's size.
 
+Before it writes a whiteout, metadata marker or copy-up for an entry a
+lower layer has, the union finds how that layer spells the entry's name
+(see the README's changeset section). For an ASCII name on a host that
+does not fold case this is one extra `Lstat`. On a host that folds case
+(macOS, Windows), and for other names, it reads the lower directory's
+listing; the last listing is kept while the directory's modification time
+stays the same, unless the directory changed in the last two seconds. On
+APFS, removing each of 5,000 lower files one by one cost 89 µs per
+`Remove` with the fix and without it; in a lower directory changed within
+the last two seconds, it cost 478 µs per `Remove` against 77 µs, since
+each read the whole listing.
+
 ## Benchmarking
 
 ### Running Benchmarks

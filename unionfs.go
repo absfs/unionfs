@@ -75,7 +75,8 @@ type UnionFS struct {
 	cache          *Cache
 	lc             *lookupCache // nil unless WithLookupCache enables it
 	copyBufferSize int
-	asideSeq       uint64 // last suffix asideName used; guarded by mu
+	asideSeq       uint64   // last suffix asideName used; guarded by mu
+	spelled        *listing // the listing storedName read last; guarded by mu
 
 	upperMarkersOnly bool // WithMarkersOnlyInWritableLayer
 

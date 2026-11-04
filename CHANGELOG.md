@@ -179,6 +179,24 @@ host-directory test of their own.
 - The union's bookkeeping could act through a symbolic link in the
   writable layer, and the lookup cache could walk through a directory
   that had become one; see [Security](#security).
+- On a host that takes two spellings for one name (`d` and `D` where it
+  folds case, the composed and decomposed `é` on macOS), the union spelled
+  its markers and copy-ups as the caller did. `RemoveAll("/D")` of a lower
+  `d` wrote `.wh.D`: lookups hid `d`, since the host folded the names, but
+  `ReadDir` still listed it, and a changeset reader matching markers byte
+  for byte, as the README tells it to, recorded the deletion of `D` while
+  `d` survived. `Chmod("/D")` wrote `.wh..wh.meta.D`, a write through
+  `/D` copied the file up as `D`, and `Rename("/D", "/e")` whited out
+  `D`. Whiteouts, metadata markers and copy-ups for an entry a lower
+  layer has are now spelled as that layer stores it; renaming onto an
+  entry only lower layers have keeps its spelling, as a host does; a new
+  name keeps the caller's, and creating one over a deleted lower name of
+  another spelling keeps that name's whiteout rather than removing it.
+  `ReadDir` now agrees with lookups where a marker or an entry in a layer
+  above spells a lower name differently (written by earlier builds, or
+  two read-only layers that disagree). Renaming a directory to another
+  spelling of its own name failed with `ENOTEMPTY`; it now changes the
+  spelling.
 
 ### Added
 
