@@ -171,7 +171,11 @@ below). The format, exactly:
 A whiteout and an entry of the same name never coexist in the writable
 layer once an operation has finished. Marker files never show in the
 merged view, and the union refuses to create a name starting with `.wh.`
-(EPERM).
+in any ASCII case (`.WH.`, `.Wh.`, `.wH.`), with EPERM: a host that folds
+case takes `.WH.x` for the marker `.wh.x`. The rule holds on every host,
+since one layer can span volumes that fold differently. Only the letters'
+case matters: no other character, and no Unicode normalisation, makes a
+host take a name for one starting with `.wh.`.
 
 Names starting with `.wh..wh.` are reserved for metadata, as in AUFS and
 OCI: they are hidden but delete nothing, and `WhiteoutTarget` returns false
@@ -356,9 +360,20 @@ change fails with `ErrNoWritableLayer`.
   union expected in the writable layer that is now something else fails
   with `ENOTDIR`. `Lchown` of a link fails with `errors.ErrUnsupported`
   when the writable layer has no `Lchown`, rather than following it.
-- **Hosts that fold case** (macOS and Windows by default) take `.WH.x`,
-  which the union lets a client create, for the marker `.wh.x`: such an
-  entry hides `x`, or blocks metadata changes to it, as above.
+- **Hosts that fold case** (macOS and Windows by default) take `.WH.<x>`
+  for the marker `.wh.<x>`. The union refuses to create such a name, but
+  one can already be in the writable layer: made by v1.0.0, which allowed
+  it, or by a client of the layer's directory. The union then takes it for
+  its own marker. A `.WH.<x>` hides `x` from lookups (`Lstat`, `Open`),
+  though `ReadDir` still lists `x`, and the union deletes it when `x` is
+  created. A `.WH.__dir_opaque` makes its directory opaque. A regular file
+  `.WH..wh.meta.<x>` becomes `x`'s metadata: its mode, times and owner are
+  `x`'s, and `Chmod` of `x` changes it. A link or directory at a metadata
+  marker's name makes metadata changes to `x` fail with `EEXIST`, and one
+  at a whiteout's or opaque marker's name is left unopened, as above.
+  Looking such a name up by its own spelling finds the union's marker of
+  the folded name. `ReservedNames` does not report these names; check a
+  writable layer from before v1.1.0 for them with a case-insensitive test.
 - **A lower's own `.wh.` names vanish** by default, taken for markers.
   Check a lower with `ReservedNames`, or use
   `WithMarkersOnlyInWritableLayer` (see the changeset section).
@@ -388,7 +403,13 @@ change fails with `ErrNoWritableLayer`.
   expire, or after `InvalidateCache`, `InvalidateCacheTree` or
   `ClearCache` of the topmost path the change created or removed: until
   then a name added to a layer may stay missing, or stay hidden by a layer
-  above. A name removed from its layer is noticed at once.
+  above. A name removed from its layer is noticed at once. On a host that
+  takes two spellings for one name (`d` and `D` where it folds case, the
+  composed and decomposed forms of `é` on macOS), a change made through
+  one spelling drops only that spelling's entries, so the other may show
+  the old view until it expires. The cache never walks through a
+  directory that has become a symbolic link, though: creating a link, or
+  renaming anything but a regular file, in the writable layer empties it.
 - **The Stat cache** holds `Stat` and `Lstat` results. It is dropped for
   paths changed through the union, by the path the caller gave and the
   path it resolved to. It is not dropped for changes made to a layer

@@ -10,6 +10,53 @@ Intended as v1.1.0: the API only grows, but several behaviours change to
 match POSIX, and callers relying on the old ones should read
 [Changed](#changed) first.
 
+### Security
+
+These affect a union whose writable layer is a host directory (basefs over
+osfs) that clients change through the union. basefs v1.0.0 lets a client
+make a symbolic link whose relative target stays inside the layer where it
+is made and climbs out of it once the link is renamed one level up; a host
+follows such a link wherever the union hands it a path through it.
+
+- The union's own bookkeeping acted through a link in the writable layer.
+  `Remove` and `Rename`, of files and of directories, wrote their
+  whiteout or opaque marker by opening the marker's path with `O_TRUNC`,
+  so a link there truncated its target, outside the layer. `Chmod`,
+  `Chown` and `Chtimes` of a file only a lower layer has took a link at
+  its metadata marker's path for the marker and changed the link's
+  target's mode, owner or times. `Lchown` of a link, on a writable layer without
+  `Lchown`, fell back to `Chown` and changed the link's target's owner. On
+  a host that folds case (macOS, and Windows by default) a client could
+  plant such a link through the union itself, as `.WH.<name>` or
+  `.WH..wh.meta.<name>`, which the host takes for the marker. Now an entry
+  already at a whiteout's or opaque marker's path counts as that marker
+  and is never opened; markers and copy-ups are created with `O_EXCL`;
+  only a regular file is a metadata marker (anything else there makes the
+  change fail with `EEXIST`); a directory the union expected in the
+  writable layer that is something else fails with `ENOTDIR`; and `Lchown`
+  of a link fails with `errors.ErrUnsupported` when the layer has no
+  `Lchown`.
+- The union let clients create names that a host folding case takes for
+  its markers: `.WH.x` hid a lower `x`, `.WH.__dir_opaque` made a merged
+  directory opaque, a regular `.WH..wh.meta.x` became `x`'s metadata, and
+  creating `x` deleted the client's `.WH.x`. Creating, renaming onto or
+  making a directory at a name starting with `.wh.` in any ASCII case now
+  fails with `EPERM`, on every host.
+- With `WithLookupCache`, the cache keyed names by the union's spelling,
+  but a host can take two spellings for one name: `d` and `D` where it
+  folds case, and the composed and decomposed forms of `é` on macOS, even
+  on a case-sensitive volume. A client could remove a cached directory
+  through one spelling and put an escaping link at the other; the cached
+  directory was then walked through without being checked again, so
+  `OpenFile` with `O_TRUNC`, `Chmod` and `Create` under it reached a file
+  or directory outside the layer. Creating a link in the writable layer,
+  or renaming anything there but a regular file, now empties the lookup
+  cache. The lookup cache is new in this release, so no released version
+  has this one.
+
+The case-folding attacks are tested on macOS; Windows runs the same code
+paths but no host-directory test of its own.
+
 ### Fixed
 
 - `Remove` wrote a whiteout for every removed file, including ones only the
@@ -93,20 +140,8 @@ match POSIX, and callers relying on the old ones should read
   file a modification time in 1754. A zero `mtime` now leaves the
   modification time as it is, as `os.Chtimes` does.
 - The union's bookkeeping could act through a symbolic link in the
-  writable layer, which a host follows: writing a whiteout or opaque
-  marker opened an existing entry at its path with `O_TRUNC`, and a link
-  at a metadata marker's path was taken for the marker, so `Chmod`,
-  `Chown` and `Chtimes` changed the link's target. On a host that folds
-  case (macOS, Windows), a client could make such a link through the
-  union itself as `.WH.<name>`, and with the relative-link escape basefs
-  documents, truncate or chmod a file outside the layer. A marker's path
-  that already holds an entry now counts as the marker and is left
-  unopened; markers and copy-ups are created with `O_EXCL`; only a regular
-  file is a metadata marker (otherwise the change fails with `EEXIST`); a
-  directory the union expected in the writable layer that is something
-  else fails with `ENOTDIR`; and `Lchown` of a link fails with
-  `errors.ErrUnsupported` instead of falling back to `Chown` when the
-  writable layer has no `Lchown`.
+  writable layer, and the lookup cache could walk through a directory
+  that had become one; see [Security](#security).
 
 ### Added
 
@@ -176,6 +211,9 @@ These may affect existing callers:
   a lower file as deleted or a deleted one as present.
 - Names starting with `.wh.` are refused (`EPERM`) and never resolve, so a
   marker file can no longer be read, listed or created as a regular file.
+  Creating a name starting with `.wh.` in any other ASCII case (`.WH.x`)
+  is refused too (see [Security](#security)); existing ones still resolve,
+  and can be read, removed and renamed away.
 - Opening a directory for writing fails with `EISDIR`; `Readlink` of a
   non-link fails with `EINVAL` (memfs returned an empty target).
 - `OpenFile` of an existing file with `O_CREATE` but no write flag is a
