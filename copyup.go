@@ -72,25 +72,49 @@ type upperFS struct {
 // change with the Lstat's error. It costs one Lstat per directory above
 // name.
 //
+// The check sees the layer as it is when it runs; a link swapped in for a
+// directory between the check and the change is followed. Only a layer
+// that confines physically refuses that one.
+//
 // A layer basefs reports Confined (basefs over osfs from Go 1.25 on Unix)
 // is not checked: the host itself refuses to follow a link out of it, and
 // its Lstat walks the path one directory at a time, so the check would cost
 // the square of the depth. A link made around the union that stays inside
 // such a layer is a direct change to the layer like any other.
 func (u upperFS) confirmDirs(op, name string) error {
+	return u.confirm(op, name, false)
+}
+
+// confirmPath is confirmDirs for a change that the layer would make
+// through a symbolic link at name itself, not to the link: OpenFile
+// without O_EXCL, Chmod, Chown, Chtimes and Truncate. It also checks that
+// name is not a link, at one more Lstat. The union hands such a change
+// the path a link resolves to, never the link, so a link there was made
+// around the union, in place of the entry the cache resolved. A name that
+// is missing is left for the change itself to report.
+func (u upperFS) confirmPath(op, name string) error {
+	return u.confirm(op, name, true)
+}
+
+func (u upperFS) confirm(op, name string, last bool) error {
 	if basefs.Confined(u.FileSystem) {
 		return nil
 	}
 	p := cleanPath(name)
-	for i := 1; i < len(p); i++ {
-		if p[i] != '/' {
+	for i := 1; i <= len(p); i++ {
+		if i < len(p) && p[i] != '/' {
 			continue
 		}
-		info, err := u.ufs.layerLstat(0, p[:i])
-		if err != nil {
-			return err
+		if i == len(p) && (!last || p == "/") {
+			break
 		}
-		if info.IsDir() {
+		info, err := u.ufs.layerLstat(0, p[:i])
+		switch {
+		case i == len(p) && isNotExist(err):
+			return nil
+		case err != nil:
+			return err
+		case i < len(p) && info.IsDir(), i == len(p) && !isSymlink(info):
 			continue
 		}
 		u.ufs.lc.clear()
@@ -99,8 +123,15 @@ func (u upperFS) confirmDirs(op, name string) error {
 	return nil
 }
 
+// OpenFile checks name itself too, unless it is to be created exclusively:
+// O_CREATE without O_EXCL follows a link there, even one that leads
+// nowhere yet.
 func (u upperFS) OpenFile(name string, flag int, perm os.FileMode) (absfs.File, error) {
-	if err := u.confirmDirs("open", name); err != nil {
+	confirm := u.confirmPath
+	if flag&(os.O_CREATE|os.O_EXCL) == os.O_CREATE|os.O_EXCL {
+		confirm = u.confirmDirs
+	}
+	if err := confirm("open", name); err != nil {
 		return nil, err
 	}
 	if flag&os.O_CREATE != 0 {
@@ -160,8 +191,8 @@ func (u upperFS) Rename(oldname, newname string) error {
 // link. A link reaches the writable layer through the union only by
 // Symlink or Rename, and both empty the cache, so a cached directory is
 // never one the host would follow a link the union made for. A link made
-// around the union is caught by confirmDirs before anything is changed
-// through it.
+// around the union is caught by confirmDirs or confirmPath before anything
+// is changed through it.
 func (u upperFS) Symlink(oldname, newname string) error {
 	if err := u.confirmDirs("symlink", newname); err != nil {
 		return err
@@ -180,28 +211,28 @@ func (u upperFS) Lchown(name string, uid, gid int) error {
 }
 
 func (u upperFS) Chmod(name string, mode os.FileMode) error {
-	if err := u.confirmDirs("chmod", name); err != nil {
+	if err := u.confirmPath("chmod", name); err != nil {
 		return err
 	}
 	return u.FileSystem.Chmod(name, mode)
 }
 
 func (u upperFS) Chown(name string, uid, gid int) error {
-	if err := u.confirmDirs("chown", name); err != nil {
+	if err := u.confirmPath("chown", name); err != nil {
 		return err
 	}
 	return u.FileSystem.Chown(name, uid, gid)
 }
 
 func (u upperFS) Chtimes(name string, atime, mtime time.Time) error {
-	if err := u.confirmDirs("chtimes", name); err != nil {
+	if err := u.confirmPath("chtimes", name); err != nil {
 		return err
 	}
 	return u.FileSystem.Chtimes(name, atime, mtime)
 }
 
 func (u upperFS) Truncate(name string, size int64) error {
-	if err := u.confirmDirs("truncate", name); err != nil {
+	if err := u.confirmPath("truncate", name); err != nil {
 		return err
 	}
 	return u.FileSystem.Truncate(name, size)

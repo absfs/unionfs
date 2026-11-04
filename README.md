@@ -491,18 +491,24 @@ change fails with `ErrNoWritableLayer`.
   retry acts on the current view. The cache never walks through a
   directory that has become a symbolic link, either: creating a link, or
   renaming anything but a regular file, in the writable layer empties it.
-  A link made in the writable layer directly, around the union, at a
-  directory the cache holds (under any spelling the host takes for it)
-  never carries a change out of the layer: before the union changes
-  anything there it checks, with one `Lstat` per directory, that every
-  directory above the name is still one, and if not it empties the cache
-  and fails with `ESTALE`, so a retry resolves the link through the union
-  (issue #12). The check is skipped for a layer basefs reports `Confined`
-  (basefs over osfs from Go 1.25 on Unix), whose host refuses to follow a
-  link out of it. Reads are not checked: until the cache drops the entries
+  A link made in the writable layer directly, around the union, in place
+  of a directory or file the cache holds (under any spelling the host
+  takes for it) is caught before a change is made through it: the union
+  first checks, with one `Lstat` per directory, that every directory
+  above the name is still one, and for a change that would follow a link
+  at the name itself (`OpenFile` without `O_EXCL`, `Chmod`, `Chown`,
+  `Chtimes`, `Truncate`) that the name is not a link, one more `Lstat`.
+  When the check fails it empties the cache and fails with `ESTALE`, so a
+  retry resolves the link through the union (issue #12). The check is
+  skipped for a layer basefs reports `Confined` (basefs over osfs from
+  Go 1.25 on Unix), whose host refuses to follow a link out of it. Two
+  residuals remain for a layer that does not confine physically (basefs
+  before Go 1.25, on Windows, or `NewFSUnconfined`). The check sees the
+  layer as it is when it runs, so a link swapped in between the check and
+  the change is followed out; only physical confinement guards against
+  that race. And reads are not checked: until the cache drops the entries
   such a link shadows, `Stat`, `Open` for reading and `ReadDir` through
-  them follow it, out of a layer that does not confine physically
-  (basefs before Go 1.25, on Windows, or `NewFSUnconfined`).
+  them follow it out.
 - **The Stat cache** holds `Stat` and `Lstat` results. It is dropped for
   paths changed through the union, by the path the caller gave and the
   path it resolved to. It is not dropped for changes made to a layer

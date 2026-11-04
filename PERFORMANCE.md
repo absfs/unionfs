@@ -84,19 +84,22 @@ also changes where every name under it is found).
 
 A change with the lookup cache on also checks that every directory above
 the name it changes is still a directory in the writable layer, one
-`Lstat` each, so that a link made there around the union is not followed
-out of the layer (issue #12). A layer basefs reports `Confined` (basefs
-over osfs from Go 1.25 on Unix) skips the check. `BenchmarkCachedWrite`
-changes a file four directories down in the upper of two host-directory
-layers (µs/op, Apple M3 Max under load, so differences under about 30% are
-noise):
+`Lstat` each, and a change that would follow a link at the name itself
+(`OpenFile` without `O_EXCL`, `Chmod`, `Chown`, `Chtimes`, `Truncate`)
+checks the name too, one more `Lstat`, so that a link made there around
+the union is not followed out of the layer (issue #12). A layer basefs
+reports `Confined` (basefs over osfs from Go 1.25 on Unix) skips the
+check. `BenchmarkCachedWrite` changes a file four directories down in the
+upper of two host-directory layers, five `Lstat`s of checking (µs/op,
+Apple M3 Max under load, so differences under about 30% are noise; the
+"without the check" column is the same build with the check disabled):
 
-| basefs     | Change      | No cache | Lookup cache, before | Lookup cache |
-| ---------- | ----------- | -------- | -------------------- | ------------ |
-| Confined   | `Chmod`     | 189      | 108                  | 105          |
-| Confined   | open, write | 192      | 104                  | 110          |
-| Unconfined | `Chmod`     | 25       | 13                   | 18           |
-| Unconfined | open, write | 25       | 14                   | 20           |
+| basefs     | Change      | No cache | Lookup cache, without the check | Lookup cache |
+| ---------- | ----------- | -------- | ------------------------------- | ------------ |
+| Confined   | `Chmod`     | 205      | 115                             | 115          |
+| Confined   | open, write | 209      | 106                             | 119          |
+| Unconfined | `Chmod`     | 28       | 12                              | 20           |
+| Unconfined | open, write | 29       | 14                              | 22           |
 
 A confined basefs is slower throughout because `os.Root` resolves a path
 one directory at a time.
