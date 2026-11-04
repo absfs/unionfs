@@ -15,11 +15,38 @@ import (
 // WhiteoutTarget to tell them apart.
 //
 // Whiteout markers never appear in a union's merged view, and a union refuses
-// to create a file, directory or symlink whose name starts with the prefix.
+// to create a file, directory or symlink whose name starts with the prefix,
+// in any ASCII case (".WH.", ".Wh."), since a host that folds case takes
+// such a name for a marker.
 // Under WithMarkersOnlyInWritableLayer such names in a read-only layer are
 // ordinary entries instead; see ReservedNames.
 func IsWhiteout(name string) bool {
 	return strings.HasPrefix(path.Base(name), WhiteoutPrefix)
+}
+
+// reservedForClient reports whether a client may not create an entry
+// named base: one whose first four bytes are WhiteoutPrefix in any ASCII
+// case. A host that folds case (macOS and Windows by default) takes
+// ".WH.x" for the marker ".wh.x", so such a name would act as the union's
+// own marker; the name is refused on every host, since one layer can span
+// volumes that fold differently. Only ASCII case matters: '.' has no
+// case, Unicode folds nothing but 'W' and 'H' to 'w' and 'h', and a probe of
+// every code point in each position on APFS, normalisation included, found
+// no other name the host takes for one starting with ".wh.".
+func reservedForClient(base string) bool {
+	if len(base) < len(WhiteoutPrefix) {
+		return false
+	}
+	for i := 0; i < len(WhiteoutPrefix); i++ {
+		c := base[i]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != WhiteoutPrefix[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // IsOpaqueMarker reports whether name, a base name or a path, is the opaque

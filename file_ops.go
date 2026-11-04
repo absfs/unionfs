@@ -246,7 +246,8 @@ func (ufs *UnionFS) openFileNode(n *node, flag int, perm os.FileMode) (absfs.Fil
 // directory that holds it and its name there. When follow is set, a dangling
 // symbolic link at p is followed to the path it names, as creating a file
 // through such a link does; otherwise an existing entry, link or not, is
-// EEXIST. A name with the whiteout prefix is refused with EPERM.
+// EEXIST. A name with the whiteout prefix, in any ASCII case, is refused
+// with EPERM (see reservedForClient).
 func (ufs *UnionFS) createTarget(op, p string, follow bool) (*node, string, error) {
 	if p == "/" {
 		return nil, "", &os.PathError{Op: op, Path: p, Err: os.ErrExist}
@@ -259,7 +260,7 @@ func (ufs *UnionFS) createTarget(op, p string, follow bool) (*node, string, erro
 			return nil, "", err
 		}
 		full := path.Join(dir.path, base)
-		if IsWhiteout(base) {
+		if reservedForClient(base) {
 			return nil, "", &os.PathError{Op: op, Path: full, Err: syscall.EPERM}
 		}
 		c, err := ufs.child(dir, base)
@@ -364,7 +365,7 @@ func (ufs *UnionFS) MkdirAll(name string, perm os.FileMode) error {
 		next, err := ufs.child(cur, elem)
 		switch {
 		case os.IsNotExist(err):
-			if IsWhiteout(elem) {
+			if reservedForClient(elem) {
 				return &os.PathError{Op: "mkdir", Path: name, Err: syscall.EPERM}
 			}
 			// mkdirAt drops the resolved path; given may reach it through
@@ -583,7 +584,7 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 	if err != nil {
 		return fail(err)
 	}
-	if IsWhiteout(base) {
+	if reservedForClient(base) {
 		return fail(syscall.EPERM)
 	}
 	dp := path.Join(dstDir.path, base)

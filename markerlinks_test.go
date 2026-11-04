@@ -277,11 +277,16 @@ func caseFolds(t *testing.T, dir string) bool {
 }
 
 // On a host that folds case (macOS and Windows by default), ".WH.x" is a
-// name the union lets a client create and the host takes for the marker
-// ".wh.x". A client that makes such a link through the union, and moves it
-// with Rename so that its relative target climbs out of the layer (which
-// basefs documents it cannot prevent), must not get the union's bookkeeping
-// to follow it outside the layer.
+// name the host takes for the marker ".wh.x". The union refuses to create
+// such a name, but one can already be there: made by an older version that
+// allowed it, or by a client of the layer's directory. A link there whose
+// relative target climbs out of the layer (which basefs documents it cannot
+// prevent) must not get the union's bookkeeping to follow it outside the
+// layer.
+//
+// Host-directory layers are exercised on Unix, so of the hosts that fold
+// case this runs only on macOS; Windows is covered by the same code paths
+// and by the memfs tests above, not by a test of its own.
 func TestCaseFoldedMarkerLinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("host-directory layers are exercised on Unix")
@@ -338,17 +343,16 @@ func TestCaseFoldedMarkerLinks(t *testing.T) {
 			// The link's name: the marker's, with its prefix upper-cased.
 			dir, base := path.Split(tc.marker)
 			name := dir + strings.ToUpper(WhiteoutPrefix) + strings.TrimPrefix(base, WhiteoutPrefix)
-			// Made one level deeper, where basefs lets its target stay in
-			// the layer, then moved up a level, where it climbs out.
+			// The link's target climbs out of the layer from where it is.
 			depth := strings.Count(path.Clean(dir), "/")
 			if dir == "/" {
 				depth = 0
 			}
 			target := strings.Repeat("../", depth+1) + "outside/canary"
-			must(t, ufs.Mkdir(path.Join(dir, "stage"), 0755))
-			must(t, ufs.Symlink(target, path.Join(dir, "stage", "l")))
-			must(t, ufs.Rename(path.Join(dir, "stage", "l"), name))
-			must(t, ufs.Remove(path.Join(dir, "stage")))
+			if err := ufs.Symlink(target, name); !errors.Is(err, syscall.EPERM) {
+				t.Fatalf("Symlink at %s: %v, want EPERM", name, err)
+			}
+			must(t, os.Symlink(target, filepath.Join(dirs["upper"], filepath.FromSlash(name))))
 			if real, err := filepath.EvalSymlinks(filepath.Join(dirs["upper"], name)); err != nil || real != canary {
 				t.Fatalf("planted link resolves to %q, %v", real, err)
 			}
