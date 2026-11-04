@@ -163,11 +163,20 @@ func (f *foldFS) RemoveAll(p string) error {
 }
 
 // Rename of an entry to another spelling of its own name changes the
-// name's spelling, as on a host.
+// name's spelling, as on a host. Rename onto another entry, a file or an
+// empty directory, replaces it and keeps its spelling, as APFS does (memfs
+// itself refuses to replace an entry).
 func (f *foldFS) Rename(o, n string) error {
 	fo, fn := f.fold("rename", o, false), f.fold("rename", n, false)
 	if fo == fn {
 		fn = path.Join(path.Dir(fn), path.Base(n))
+	}
+	src, serr := f.SymlinkFileSystem.Lstat(fo)
+	dst, derr := f.SymlinkFileSystem.Lstat(fn)
+	if serr == nil && derr == nil && fo != fn && src.IsDir() == dst.IsDir() {
+		if err := f.SymlinkFileSystem.Remove(fn); err != nil {
+			return err
+		}
 	}
 	return f.SymlinkFileSystem.Rename(fo, fn)
 }

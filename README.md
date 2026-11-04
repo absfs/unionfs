@@ -197,8 +197,11 @@ whiteout, a metadata marker or a copy-up for an entry a lower layer
 already has, it spells it as that layer stores the entry, not as the
 caller did: `RemoveAll("/D")` of a lower `d` writes `.wh.d`, `Chmod("/D")`
 writes `.wh..wh.meta.d`, a write through `/D` copies up as `d`, and
-`Rename("/D", "/e")` whites out `d`. Renaming onto an entry only lower
-layers have keeps the entry's spelling, as a host replacing an entry does.
+`Rename("/D", "/e")` whites out `d`. Renaming onto an existing entry keeps
+the entry's spelling, as a host replacing an entry does, whether only
+lower layers have it or the writable layer holds a copy of it:
+`Rename("/n", "/D")` over a lower `d` the writable layer has a copy of
+(say, after deleting a file in it) leaves the copy `d`, made opaque.
 A name new to the merged view keeps the caller's spelling, including a
 spelling of a deleted lower name that differs from the lower's: deleting
 `d` and creating `D` leaves `.wh.d` and `D` side by side, which a reader

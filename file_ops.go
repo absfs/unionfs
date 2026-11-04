@@ -605,10 +605,14 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 		if isDir {
 			dst = nil
 		}
-	case !ufs.inUpper(dst):
+	default:
 		// A host replacing an entry keeps the entry's spelling, and so
-		// does the union for one only lower layers have: renaming onto
-		// "/E" over a lower "e" writes "e".
+		// does the union, whichever layer holds it: renaming onto "/E"
+		// over a lower "e", or over the writable layer's copy "e" of it,
+		// writes "e". The writable layer would not always keep it: one
+		// that cannot replace a directory holding markers in place has
+		// it set aside (see moveUpper), and the source then takes the
+		// spelling it is given.
 		base = ufs.nameIn(dst, dst.top())
 	}
 	dp := path.Join(dstDir.path, base)

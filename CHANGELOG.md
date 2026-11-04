@@ -189,7 +189,9 @@ host-directory test of their own.
   `/D` copied the file up as `D`, and `Rename("/D", "/e")` whited out
   `D`. Whiteouts, metadata markers and copy-ups for an entry a lower
   layer has are now spelled as that layer stores it; renaming onto an
-  entry only lower layers have keeps its spelling, as a host does; a new
+  existing entry keeps its spelling, as a host does, also where the
+  writable layer holds a copy of it (a directory replaced there was
+  recreated as `D` beside the lower `d`, which no whiteout deleted); a new
   name keeps the caller's, and creating one over a deleted lower name of
   another spelling keeps that name's whiteout rather than removing it.
   `ReadDir` now agrees with lookups where a marker or an entry in a layer

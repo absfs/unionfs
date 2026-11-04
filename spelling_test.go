@@ -473,3 +473,56 @@ func TestStoredNameListingKept(t *testing.T) {
 		})
 	}
 }
+
+// Renaming onto an entry the writable layer already has a copy of, which a
+// lower layer has too, keeps the copy's spelling: the copy is the lower
+// entry's, and a new spelling would leave the lower entry undeleted in a
+// changeset.
+func TestStoredSpellingRenameOntoCopy(t *testing.T) {
+	for _, kind := range foldedKinds {
+		withCache(t, kind, func(t *testing.T, cache []Option) {
+			ufs, upper, _ := spellUnion(t, kind, cache)
+			must(t, ufs.Remove("/d/x"))
+			must(t, ufs.Mkdir("/n", 0755))
+			must(t, ufs.Rename("/n", "/D"))
+			must(t, ufs.Truncate("/e", 0))
+			put(t, ufs, "/x", "new")
+			must(t, ufs.Rename("/x", "/E"))
+			wantNames(t, tree(t, upper), "/d", "/d/"+OpaqueWhiteout, "/e")
+			wantNames(t, changeset(t, upper), "R /d", "W /d", "W /e")
+			wantNames(t, list(t, ufs, "/"), "d", "e", "f", "k", "m")
+			wantNames(t, list(t, ufs, "/D"))
+			if get(t, ufs, "/E") != "new" {
+				t.Fatal("contents")
+			}
+		})
+	}
+}
+
+// The same in a directory reached through other spellings of its own and
+// its parent's names, and for an entry only the writable layer has.
+func TestStoredSpellingRenameOntoCopyNested(t *testing.T) {
+	for _, kind := range foldedKinds {
+		withCache(t, kind, func(t *testing.T, cache []Option) {
+			for _, dst := range []string{"/A/B/S", "/a/B/S", "/a/b/S"} {
+				upper, lower := foldedLayers(t, kind)
+				mustMkdirAll(t, lower, "/a/b/s")
+				put(t, lower, "/a/b/s/y", "y")
+				ufs := New(append([]Option{WithWritableLayer(upper), WithReadOnlyLayer(lower)}, cache...)...)
+				must(t, ufs.Remove("/a/b/s/y"))
+				must(t, ufs.Mkdir("/a/n", 0755))
+				must(t, ufs.Rename("/a/n", dst))
+				put(t, ufs, "/a/new", "1")
+				put(t, ufs, "/a/x", "2")
+				must(t, ufs.Rename("/a/x", "/A/NEW"))
+				wantNames(t, tree(t, upper), "/a", "/a/b", "/a/b/s", "/a/b/s/"+OpaqueWhiteout, "/a/new")
+				wantNames(t, changeset(t, upper), "R /a/b/s", "W /a", "W /a/b", "W /a/b/s", "W /a/new")
+				wantNames(t, list(t, ufs, "/a/b"), "s")
+				wantNames(t, list(t, ufs, "/a/b/s"))
+				if get(t, ufs, "/a/NEW") != "2" {
+					t.Fatal("contents")
+				}
+			}
+		})
+	}
+}

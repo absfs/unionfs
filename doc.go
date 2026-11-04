@@ -82,11 +82,12 @@ Every change goes to the writable layer:
     as that layer stores the entry, whatever spelling the caller used:
     RemoveAll("/D") of a lower "d" writes ".wh.d", so that a changeset
     reader matching markers to names byte for byte sees "d" deleted.
-    Renaming onto an entry only lower layers have keeps the entry's
-    spelling, as a host does. A name new to the merged view keeps the
-    caller's spelling; where it spells a deleted lower name otherwise, the
-    lower name's whiteout stays beside it. A writable layer that does not
-    fold over a lower that does gets the caller's spelling, as before.
+    Renaming onto an existing entry keeps the entry's spelling, as a
+    host does, also where the writable layer holds a copy of it. A name
+    new to the merged view keeps the caller's spelling; where it spells a
+    deleted lower name otherwise, the lower name's whiteout stays beside
+    it. A writable layer that does not fold over a lower that does gets
+    the caller's spelling, as before.
 
 The read-only layers are never written to. A union built without
 WithWritableLayer is read-only: every change fails with ErrNoWritableLayer.
