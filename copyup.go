@@ -65,14 +65,29 @@ func (u upperFS) RemoveAll(name string) error {
 	return u.FileSystem.RemoveAll(name)
 }
 
+// Rename empties the lookup cache when it moves anything but a regular
+// file: see Symlink. A directory carries the links inside it.
 func (u upperFS) Rename(oldname, newname string) error {
+	if info, err := u.ufs.layerLstat(0, oldname); err != nil || !info.Mode().IsRegular() {
+		defer u.ufs.lc.clear()
+	}
 	defer u.ufs.touched(oldname)
 	defer u.ufs.touched(newname)
 	return u.FileSystem.Rename(oldname, newname)
 }
 
 // Symlink is the writable layer's; upperSymlinker checks that it has one.
+//
+// It empties the lookup cache. The cache keys names by the union's
+// spelling, but a host may take two spellings for one entry ("d" and "D"
+// where it folds case, NFC and NFD forms where it normalises Unicode), so
+// dropping the entries of the name the link is made at can leave a cached
+// directory of another spelling that the host now resolves through the
+// link. A link reaches the writable layer only through Symlink or Rename,
+// and both empty the cache, so a cached directory is never one the host
+// would follow a link for.
 func (u upperFS) Symlink(oldname, newname string) error {
+	defer u.ufs.lc.clear()
 	defer u.ufs.touched(newname)
 	return u.FileSystem.(symlinker).Symlink(oldname, newname)
 }

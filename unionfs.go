@@ -160,6 +160,13 @@ func WithCacheConfig(enabled bool, statTTL, negativeTTL time.Duration, maxEntrie
 // layer may stay missing, or stay hidden by a layer above, and a name
 // removed from a layer is found again in a lower layer only when the
 // final element of a lookup goes missing.
+//
+// On a host that takes two spellings for one name ("d" and "D" where it
+// folds case, NFC and NFD forms on macOS), a change made through one
+// spelling drops only that spelling's entries, so the other may show the
+// old view until it expires. A cached directory is never walked through
+// once a link may have replaced it: creating a link in the writable layer,
+// or renaming anything there but a regular file, empties the cache.
 func WithLookupCache(ttl time.Duration, maxEntries int) Option {
 	return func(ufs *UnionFS) {
 		ufs.lc = nil
