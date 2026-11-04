@@ -79,9 +79,20 @@ follows such a link wherever the union hands it a path through it.
   lookup cache against the layers first; when the merged view has changed
   there, the cache is emptied and the change fails, with `ENOENT` when the
   name is gone and `ESTALE` otherwise, so a retry acts on the current view.
+- On Windows, where 8.3 short names are on (the default on system
+  volumes), NTFS gives `.wh.x` a second name such as `WH~1.X` or
+  `WHE0B6~1.X`, and the union's markers were reachable through it:
+  `Remove`, `Rename` of or onto it, and `OpenFile` with `O_CREATE` deleted
+  or replaced the whiteout and brought the lower `x` back, and `Remove`
+  of the opaque marker's short name exposed a directory's lower entries.
+  A name with the shape of a short name that a layer whose markers count
+  resolves but does not list under that name now fails with `EPERM`, for
+  every operation and whatever entry it aliases; an entry whose own name
+  has that shape is unaffected.
 
-The case-folding attacks are tested on macOS; Windows runs the same code
-paths but no host-directory test of its own.
+The case-folding attacks are tested on macOS, and the short-name ones on a
+Windows host directory; the rest of the Windows code paths have no
+host-directory test of their own.
 
 ### Fixed
 

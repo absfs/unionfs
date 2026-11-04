@@ -2,6 +2,7 @@ package unionfs
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -385,4 +386,121 @@ func TestRenameDirDropsLegacyFoldedNames(t *testing.T) {
 	must(t, ufs.Rename("/dir", "/dir2"))
 	wantNames(t, list(t, upper, "/dir2"), "a", "b")
 	wantNames(t, list(t, ufs, "/dir2"), "a", "b")
+}
+
+func TestShortNameShape(t *testing.T) {
+	for name, want := range map[string]bool{
+		"WH~1.X": true, "wh~1.x": true, "WH~12": true, "WHA1B2~1.TXT": true,
+		"~1": true, "A~1.": true,
+		"WH~.X": false, "WH~1A.X": false, "WH1.X": false, "LONGNAME~1.X": false,
+		"WH~1.TEXT": false, "WH~1.X.Y": false, ".WH~1": false, "": false,
+		"foo.txt~": false, "x": false,
+	} {
+		if got := shortNameShape(name); got != want {
+			t.Errorf("shortNameShape(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// Where 8.3 names are on (Windows, by default on system volumes), NTFS
+// gives ".wh.x" the short name "WH~1.X" too. No such alias of the union's
+// markers may reach them; newShortFS simulates the host on memfs, and
+// TestShortNameAliasOfMarker runs the same on a Windows host directory.
+func TestShortNameAliasesRefused(t *testing.T) {
+	withCache(t, "memfs", func(t *testing.T, cache []Option) {
+		upper := newShortFS(t)
+		lower := mustNewMemFS().(absfs.SymlinkFileSystem)
+		for _, n := range []string{"/x", "/y", "/z"} {
+			put(t, lower, n, "lower")
+		}
+		mustMkdirAll(t, lower, "/dir/inner")
+		ufs := New(append([]Option{WithWritableLayer(upper), WithReadOnlyLayer(lower)}, cache...)...)
+		for _, n := range []string{"/x", "/y", "/z", "/dir"} {
+			must(t, ufs.RemoveAll(n))
+		}
+		must(t, ufs.Mkdir("/dir", 0755)) // opaque
+		put(t, ufs, "/ab~1.txt", "literal")
+		put(t, ufs, "/new", "new")
+
+		intact := func(what string, err error) {
+			t.Helper()
+			if !errors.Is(err, syscall.EPERM) {
+				t.Errorf("%s: err = %v, want EPERM", what, err)
+			}
+			for _, n := range []string{"/x", "/y", "/z", "/dir/inner"} {
+				wantNotExist(t, ufs, n)
+			}
+			for _, n := range []string{"/.wh.x", "/.wh.y", "/.wh.z", "/dir/.wh.__dir_opaque"} {
+				if info, err := upper.Lstat(n); err != nil || info.Size() != 0 {
+					t.Errorf("%s: %v %v", n, err, info)
+				}
+			}
+		}
+		_, err := ufs.Lstat("/WH~1.X")
+		intact("Lstat", err)
+		_, err = ufs.Open("/wh~1.x")
+		intact("Open", err)
+		intact("Remove", ufs.Remove("/WH~1.X"))
+		intact("RemoveAll", ufs.RemoveAll("/WH~1.Y"))
+		intact("Remove opaque", ufs.Remove("/dir/WH~1.__D"))
+		intact("Rename", ufs.Rename("/WH~1.Y", "/moved"))
+		intact("Rename onto", ufs.Rename("/new", "/WH~1.Z"))
+		_, err = ufs.OpenFile("/WH~1.Z", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+		intact("OpenFile O_CREATE", err)
+		intact("Mkdir", ufs.Mkdir("/WH~1.Z", 0755))
+		intact("Symlink", ufs.Symlink("/new", "/WH~1.Z"))
+		intact("Chmod", ufs.Chmod("/WH~1.X", 0600))
+		intact("Truncate", ufs.Truncate("/WH~1.X", 3))
+
+		// A name of that shape that the layer has under that name is an
+		// ordinary entry; an alias of an ordinary entry is refused too,
+		// since the union cannot tell whose alias it is.
+		if got := get(t, ufs, "/AB~1.TXT"); got != "literal" {
+			t.Fatalf("/AB~1.TXT = %q", got)
+		}
+		must(t, ufs.Rename("/ab~1.txt", "/cd~2"))
+		must(t, ufs.Remove("/cd~2"))
+		put(t, ufs, "/anotherlong.txt", "upper")
+		_, err = ufs.Lstat("/ANOTHE~1.TXT")
+		if !errors.Is(err, syscall.EPERM) {
+			t.Errorf("alias of an ordinary entry: %v", err)
+		}
+	})
+}
+
+// Under WithMarkersOnlyInWritableLayer a read-only layer's names are never
+// markers, so its short-name aliases resolve as the host resolves them.
+func TestShortNameAliasInLowerUnderMarkersOnly(t *testing.T) {
+	lower := newShortFS(t)
+	put(t, lower, "/longername.txt", "lower")
+	ufs := New(WithWritableLayer(mustNewMemFS().(absfs.SymlinkFileSystem)), WithReadOnlyLayer(lower), WithMarkersOnlyInWritableLayer())
+	if got := get(t, ufs, "/LONGER~1.TXT"); got != "lower" {
+		t.Fatalf("/LONGER~1.TXT = %q", got)
+	}
+	ro := New(WithReadOnlyLayer(lower))
+	if _, err := ro.Lstat("/LONGER~1.TXT"); !errors.Is(err, syscall.EPERM) {
+		t.Fatalf("default, read-only layer alias: %v", err)
+	}
+}
+
+func TestShortNameAliasListFails(t *testing.T) {
+	upper := &failReadDir{foldFS: newShortFS(t)}
+	put(t, upper, "/longername.txt", "x")
+	ufs := New(WithWritableLayer(upper))
+	upper.fail = true
+	if _, err := ufs.Lstat("/LONGER~1.TXT"); !errors.Is(err, errInjected) {
+		t.Fatalf("Lstat: %v, want the ReadDir failure", err)
+	}
+}
+
+type failReadDir struct {
+	*foldFS
+	fail bool
+}
+
+func (f *failReadDir) ReadDir(p string) ([]fs.DirEntry, error) {
+	if f.fail {
+		return nil, errInjected
+	}
+	return f.foldFS.ReadDir(p)
 }

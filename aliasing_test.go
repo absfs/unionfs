@@ -27,6 +27,9 @@ import (
 type foldFS struct {
 	absfs.SymlinkFileSystem
 	t *testing.T
+	// short makes every entry whose name is not 8.3 reachable by a short
+	// name too, as NTFS does where 8.3 names are on (see shortOf).
+	short bool
 }
 
 func newFoldFS(t *testing.T) *foldFS {
@@ -34,6 +37,55 @@ func newFoldFS(t *testing.T) *foldFS {
 	m, err := memfs.NewFS()
 	must(t, err)
 	return &foldFS{SymlinkFileSystem: m, t: t}
+}
+
+// newShortFS returns a foldFS that also resolves 8.3 short names.
+func newShortFS(t *testing.T) *foldFS {
+	f := newFoldFS(t)
+	f.short = true
+	return f
+}
+
+// shortOf returns the (lowercase) short name NTFS would first give an entry
+// named name, or "" when name is 8.3 already: the name without leading
+// dots, its base's first six bytes without dots, "~1", and the first three
+// bytes after its last dot.
+func shortOf(name string) string {
+	if b, e, _ := strings.Cut(name, "."); b != "" && len(b) <= 8 && len(e) <= 3 && !strings.Contains(e, ".") {
+		return ""
+	}
+	n := strings.TrimLeft(name, ".")
+	base, ext := n, ""
+	if i := strings.LastIndexByte(n, '.'); i >= 0 {
+		base, ext = n[:i], n[i+1:]
+	}
+	base = strings.ReplaceAll(base, ".", "")
+	if len(base) > 6 {
+		base = base[:6]
+	}
+	if len(ext) > 3 {
+		ext = ext[:3]
+	}
+	s := base + "~1"
+	if ext != "" {
+		s += "." + ext
+	}
+	return s
+}
+
+// unshort returns the name of the entry in directory dir that element e
+// names: e itself, or the entry whose short name e is.
+func (f *foldFS) unshort(dir, e string) string {
+	if _, err := f.SymlinkFileSystem.Lstat(path.Join(dir, e)); err == nil {
+		return e
+	}
+	ents, _ := f.SymlinkFileSystem.ReadDir(dir)
+	for _, ent := range ents {
+		if shortOf(ent.Name()) == e {
+			return ent.Name()
+		}
+	}
+	return e
 }
 
 // fold returns p as the layer stores it, after checking that resolving it
@@ -46,6 +98,11 @@ func (f *foldFS) fold(op, p string, follows bool) string {
 	for i, e := range elems {
 		if e == "" {
 			break
+		}
+		if f.short {
+			e = f.unshort(cur, e)
+			elems[i] = e
+			p = "/" + strings.Join(elems, "/")
 		}
 		cur = path.Join(cur, e)
 		if i == len(elems)-1 && !follows {

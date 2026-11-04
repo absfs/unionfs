@@ -176,9 +176,18 @@ case takes `.WH.x` for the marker `.wh.x`. For the same reason no such
 name resolves: `.WH.x` is missing from the merged view, so no spelling of
 a marker's name reaches the marker. Only the lowercase prefix is
 recognised as a marker (`IsWhiteout`, `WhiteoutTarget`, `MetaTarget`). The rule holds on every host,
-since one layer can span volumes that fold differently. Only the letters'
-case matters: no other character, and no Unicode normalisation, makes a
-host take a name for one starting with `.wh.`.
+since one layer can span volumes that fold differently. Among spellings
+of the name itself, only the letters' case matters: no other character,
+and no Unicode normalisation, makes a host take a name for one starting
+with `.wh.` (checked on APFS for every one-code-point substitution and
+insertion). Windows has one more route: where 8.3 short names are on
+(the default on system volumes), NTFS gives every name that is not 8.3 a
+second, short name, so `.wh.x` is also `WH~1.X` or a hashed form such as
+`WHE0B6~1.X`. The union cannot tell which entry a short name belongs to,
+so a name of that shape (up to eight bytes ending in `~` and digits, then
+optionally `.` and up to three more) that a layer whose markers count
+resolves but does not list under that name fails with EPERM, for any
+operation. See [Caveats](#caveats).
 
 Names starting with `.wh..wh.` are reserved for metadata, as in AUFS and
 OCI: they are hidden but delete nothing, and `WhiteoutTarget` returns false
@@ -383,6 +392,15 @@ change fails with `ErrNoWritableLayer`.
   the writable layer no longer resolves, and removing its directory, or
   renaming one that lower layers contribute to, deletes it with the
   union's markers. Copy out any such file to keep first.
+- **8.3 short names on Windows are refused** in every layer whose markers
+  count, so that `WH~1.X` cannot reach the whiteout `.wh.x`. This covers
+  short names of ordinary entries too (`PROGRA~1` for `Program Files`):
+  use the long name. A name of that shape that is an entry's own name
+  (`ab~1.txt`) works as usual, at the cost of one `ReadDir` of its
+  directory per uncached lookup. Turning 8.3 names off on the layers'
+  volume (`fsutil 8dot3name set <volume> 1`; `fsutil 8dot3name query`
+  shows the setting) also removes the short names newly created markers
+  would get.
 - **A whiteout spelled differently from the lower name** (`RemoveAll("/D")`
   of a lower `d`, on a host that folds case) hides `d` from lookups, but
   `ReadDir` still lists `d`: listing matches whiteouts to names byte for

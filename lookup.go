@@ -232,9 +232,33 @@ func (ufs *UnionFS) root() (*node, error) {
 	return n, nil
 }
 
+// notShortAlias refuses name, which layer li resolves in directory dir and
+// which has the shape of an NTFS 8.3 short name, with EPERM unless the
+// layer lists it under that name (in any case). Windows gives an entry
+// whose name is not 8.3 a second, short name where 8.3 names are on (the
+// default on system volumes): ".wh.x" is also "WH~1.X". The union cannot
+// tell whose short name a name is without the host, so in a layer whose
+// markers count it refuses every such alias, as reservedForClient refuses
+// a folded ".WH.x": otherwise "WH~1.X" would reach the whiteout ".wh.x", and
+// removing it, renaming it or renaming onto it would bring back the lower
+// "x". Only a name of that shape that the layer has costs a ReadDir.
+func (ufs *UnionFS) notShortAlias(li int, dir, name string) error {
+	ents, err := ufs.layers[li].fs.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range ents {
+		if strings.EqualFold(e.Name(), name) {
+			return nil
+		}
+	}
+	return &os.PathError{Op: "lstat", Path: path.Join(dir, name), Err: syscall.EPERM}
+}
+
 // child resolves name inside directory dir without following a symbolic
 // link at name. It returns an error satisfying os.IsNotExist when the merged
-// view has no such entry.
+// view has no such entry, and EPERM for an 8.3 short-name alias (see
+// notShortAlias).
 func (ufs *UnionFS) child(dir *node, name string) (*node, error) {
 	p := path.Join(dir.path, name)
 	// A name starting with the whiteout prefix in any ASCII case is
@@ -255,6 +279,11 @@ func (ufs *UnionFS) child(dir *node, name string) (*node, error) {
 		// neither does one in a layer whose markers do not count.
 		hidesBelow := k < len(dir.layers)-1 && ufs.honours(li)
 		info, err := ufs.layerLstat(li, p)
+		if err == nil && ufs.honours(li) && shortNameShape(name) {
+			if err := ufs.notShortAlias(li, dir.path, name); err != nil {
+				return nil, err
+			}
+		}
 		if err == nil {
 			if out == nil {
 				out = &node{path: p, info: info, layers: []int{li}, parent: dir}

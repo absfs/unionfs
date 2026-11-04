@@ -30,7 +30,10 @@ that starts with WhiteoutPrefix, in any ASCII case, fails with EPERM (see
 Whiteout format for such names in a read-only layer). A host that folds
 case takes ".WH.x" for the marker ".wh.x", so the union refuses such
 names on every host, and none of them resolves: no spelling of a marker's
-name reaches the marker.
+name reaches the marker. Where Windows gives names 8.3 short aliases
+(".wh.x" is also "WH~1.X"), a name of that shape that a layer whose
+markers count resolves, but does not list under that name, fails with
+EPERM, whatever entry it aliases.
 
 # Writing
 

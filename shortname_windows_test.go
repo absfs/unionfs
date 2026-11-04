@@ -133,8 +133,8 @@ func TestShortNameAliasOfMarker(t *testing.T) {
 	}
 	refused := func(what string, err error) {
 		t.Helper()
-		if err == nil {
-			t.Errorf("%s succeeded", what)
+		if !errors.Is(err, syscall.EPERM) {
+			t.Errorf("%s: err = %v, want EPERM", what, err)
 		}
 		gone()
 	}
@@ -154,4 +154,13 @@ func TestShortNameAliasOfMarker(t *testing.T) {
 	refused("OpenFile O_CREATE", err)
 	refused("Mkdir", ufs.Mkdir("/"+short[".wh.z"], 0755))
 	refused("Chmod", ufs.Chmod("/"+short[".wh.x"], 0600))
+
+	// A name of that shape that the layer holds as its own name is an
+	// ordinary entry.
+	put(t, ufs, "/ab~1.txt", "literal")
+	if got := get(t, ufs, "/AB~1.TXT"); got != "literal" {
+		t.Errorf("/AB~1.TXT = %q", got)
+	}
+	must(t, ufs.Remove("/ab~1.txt"))
+	gone()
 }

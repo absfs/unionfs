@@ -51,6 +51,27 @@ func reservedForClient(base string) bool {
 	return true
 }
 
+// shortNameShape reports whether name has the shape of a short name NTFS
+// generates for a name that is not 8.3: one to eight bytes ending in '~'
+// and decimal digits ("WH~1", "WHA1B2~1"), then optionally '.' and up to
+// three more bytes. See notShortAlias.
+func shortNameShape(name string) bool {
+	base, ext, _ := strings.Cut(name, ".")
+	if len(base) == 0 || len(base) > 8 || len(ext) > 3 || strings.Contains(ext, ".") {
+		return false
+	}
+	i := strings.LastIndexByte(base, '~')
+	if i < 0 || i == len(base)-1 {
+		return false
+	}
+	for _, c := range base[i+1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // IsOpaqueMarker reports whether name, a base name or a path, is the opaque
 // directory marker OpaqueWhiteout. A directory in an upper layer that holds
 // this marker replaces the directory of the same path in every lower layer:
