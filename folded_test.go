@@ -364,3 +364,25 @@ func TestCopyUpDirJoinsOnlyDirectories(t *testing.T) {
 		t.Fatalf("copyUpDir: %v, want ENOTDIR", err)
 	}
 }
+
+// TestRenameDirDropsLegacyFoldedNames pins the behaviour change for a
+// writable layer from before v1.1.0 that holds a client's own `.WH.` name
+// on a host that does not fold case: such a name no longer resolves, and
+// renaming a directory lower layers contribute to drops it from the moved
+// copy along with the union's markers (as removing a directory does).
+// Kept, it would hide a name of the moved directory on a host that folds.
+func TestRenameDirDropsLegacyFoldedNames(t *testing.T) {
+	ufs, upper, lower := newTestUnion(t)
+	mustMkdirAll(t, lower, "/dir")
+	put(t, lower, "/dir/a", "a")
+	mustMkdirAll(t, upper, "/dir/.Wh.sub")
+	put(t, upper, "/dir/.WH.notes", "legacy")
+	put(t, upper, "/dir/.Wh.sub/f", "f")
+	put(t, upper, "/dir/b", "b")
+	wantNotExist(t, ufs, "/dir/.WH.notes")
+	wantNames(t, list(t, ufs, "/dir"), "a", "b")
+
+	must(t, ufs.Rename("/dir", "/dir2"))
+	wantNames(t, list(t, upper, "/dir2"), "a", "b")
+	wantNames(t, list(t, ufs, "/dir2"), "a", "b")
+}

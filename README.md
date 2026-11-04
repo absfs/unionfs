@@ -379,7 +379,10 @@ change fails with `ErrNoWritableLayer`.
   marker's name makes metadata changes to `x` fail with `EEXIST`, and one
   at a whiteout's or opaque marker's name is left unopened, as above.
   `ReservedNames` reports these names in any case; run it on a writable
-  layer from before v1.1.0.
+  layer from before v1.1.0. On every host, folding or not, such a name in
+  the writable layer no longer resolves, and removing its directory, or
+  renaming one that lower layers contribute to, deletes it with the
+  union's markers. Copy out any such file to keep first.
 - **A whiteout spelled differently from the lower name** (`RemoveAll("/D")`
   of a lower `d`, on a host that folds case) hides `d` from lookups, but
   `ReadDir` still lists `d`: listing matches whiteouts to names byte for

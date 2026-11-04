@@ -243,8 +243,12 @@ These may affect existing callers:
   marker. By default the same holds for such names in a read-only layer,
   and `ReservedNames` reports them; under
   `WithMarkersOnlyInWritableLayer` a read-only layer's are ordinary
-  entries. Removing a directory clears such names from its writable copy
-  with the union's markers.
+  entries. Such a name already in the writable layer (v1.0.0 allowed
+  creating one) is no longer reachable on any host, and is deleted with
+  the union's markers when its directory is removed, or renamed while
+  lower layers contribute to it: the moved copy does not keep it, since a
+  host that folds case would take it for a marker of the new directory.
+  Copy out any such file to keep before upgrading.
 - Opening a directory for writing fails with `EISDIR`; `Readlink` of a
   non-link fails with `EINVAL` (memfs returned an empty target).
 - `OpenFile` of an existing file with `O_CREATE` but no write flag is a
