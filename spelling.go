@@ -8,8 +8,6 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/absfs/inode"
 )
 
 // A host may take two spellings for one name: "d" and "D" where it folds
@@ -112,7 +110,7 @@ func sameIn(ents []fs.DirEntry, info os.FileInfo) string {
 		if e.Type() != info.Mode().Type() {
 			continue
 		}
-		if ei, err := e.Info(); err == nil && sameEntry(info, ei) {
+		if ei, err := e.Info(); err == nil && SameFile(info, ei) {
 			return e.Name()
 		}
 	}
@@ -154,26 +152,6 @@ func (ufs *UnionFS) respell(dir, stored, given string) (string, error) {
 		return s, err
 	}
 	return g, nil
-}
-
-// sameEntry reports whether a and b, the infos of two names, describe the
-// same file: a host file (os.SameFile) or a memfs inode. It reports false
-// when it cannot tell.
-func sameEntry(a, b os.FileInfo) bool {
-	a, b = ownInfo(a), ownInfo(b)
-	if x, ok := a.Sys().(*inode.Inode); ok {
-		y, ok := b.Sys().(*inode.Inode)
-		return ok && x != nil && x == y
-	}
-	return os.SameFile(a, b)
-}
-
-// ownInfo returns a file's own info, without a metadata marker's changes.
-func ownInfo(info os.FileInfo) os.FileInfo {
-	if m, ok := info.(metaInfo); ok {
-		return m.FileInfo
-	}
-	return info
 }
 
 // isASCII reports whether s is all ASCII.

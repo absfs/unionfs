@@ -102,8 +102,10 @@ func dotDotTree(t *testing.T, fs absfs.SymlinkFileSystem) {
 }
 
 // checkDotDot checks the union's view of dotDotTree, whichever layer holds
-// it.
-func checkDotDot(t *testing.T, ufs *UnionFS) {
+// it. hostLink, when given, makes the link whose target climbs above the
+// layer's root in the writable layer instead of the union, which refuses it
+// over a layer that does (basefs).
+func checkDotDot(t *testing.T, ufs *UnionFS, hostLink func(target, p string)) {
 	t.Helper()
 	if got := get(t, ufs, "/d/l1"); got != "physical" {
 		t.Fatalf("read through l2/../target/f = %q, want physical", got)
@@ -126,7 +128,11 @@ func checkDotDot(t *testing.T, ufs *UnionFS) {
 	// Links to "." and "..", and ".." above the root, which stays there.
 	symlink(t, ufs, ".", "/d/self")
 	symlink(t, ufs, "..", "/d/up")
-	symlink(t, ufs, "../../../..", "/d/l2up")
+	if hostLink != nil {
+		hostLink("../../../..", "/d/l2up")
+	} else {
+		symlink(t, ufs, "../../../..", "/d/l2up")
+	}
 	wantNames(t, list(t, ufs, "/d/self"), "l1", "l2", "l2up", "l3", "self", "target", "up")
 	wantNames(t, list(t, ufs, "/d/up"), "d", "x")
 	wantNames(t, list(t, ufs, "/d/l2up"), "d", "x")
@@ -158,7 +164,7 @@ func TestLinkTargetDotDotIsPhysical(t *testing.T) {
 	t.Run("lower", func(t *testing.T) {
 		ufs, _, lower := newTestUnion(t)
 		dotDotTree(t, lower)
-		checkDotDot(t, ufs)
+		checkDotDot(t, ufs, nil)
 		// An absolute target with ".." above the root. basefs refuses to
 		// store one, so only memfs layers check it.
 		symlink(t, lower, "/../../d/target/f", "/absdots")
@@ -169,10 +175,10 @@ func TestLinkTargetDotDotIsPhysical(t *testing.T) {
 	t.Run("upper", func(t *testing.T) {
 		ufs, _, _ := newTestUnion(t)
 		dotDotTree(t, ufs)
-		checkDotDot(t, ufs)
+		checkDotDot(t, ufs, nil)
 	})
 	t.Run("os", func(t *testing.T) {
-		ufs, _, lowerDir := osLayers(t)
+		ufs, upperDir, lowerDir := osLayers(t)
 		hostWrite(t, filepath.Join(lowerDir, "x", "deep", "target", "f"), "physical")
 		hostWrite(t, filepath.Join(lowerDir, "d", "target", "f"), "lexical")
 		must(t, os.MkdirAll(filepath.Join(lowerDir, "x", "deep", "deeper"), 0755))
@@ -184,7 +190,10 @@ func TestLinkTargetDotDotIsPhysical(t *testing.T) {
 		if string(b) != "physical" {
 			t.Fatalf("host read = %q", b)
 		}
-		checkDotDot(t, ufs)
+		checkDotDot(t, ufs, func(target, p string) {
+			must(t, os.Symlink(target, filepath.Join(upperDir, filepath.FromSlash(p))))
+			ufs.ClearCache()
+		})
 	})
 }
 

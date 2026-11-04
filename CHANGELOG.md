@@ -96,6 +96,20 @@ host-directory test of their own.
 
 ### Fixed
 
+- Over layers that wrap the infos `Lstat` returns, as basefs does since
+  it reports the caller's name for them (basefs master), a `Rename` that
+  changed only the case of a name (`README.md` to `Readme.md`) on a host
+  that folds case, or only its Unicode normalisation on macOS, returned
+  nil and did nothing, whether a lower layer had the name, the writable
+  layer a copy of it, or the writable layer alone ([#10]). The union
+  compared the two names' infos with `os.SameFile`, which only knows the
+  os package's own infos, took the new spelling for another entry and kept
+  the stored one. A lower layer's decomposed spelling of a name the caller
+  spelled composed went unfound the same way, so its whiteouts, metadata
+  markers and copy-ups were written under the caller's spelling, which a
+  changeset reader matching bytes takes for another name. The union now
+  compares identities with `SameFile` (below) and, where the infos carry
+  none, the layer's stored spellings.
 - `Remove` wrote a whiteout for every removed file, including ones only the
   writable layer had. It now writes one only when a lower layer still has
   the name.
@@ -202,6 +216,15 @@ host-directory test of their own.
 
 ### Added
 
+- `SameFile(a, b)` reports whether two infos describe the same file, as
+  `os.SameFile` does, but also through wrappers: it looks through any info
+  with an `Unwrap() fs.FileInfo` method (the union's own wrappers have
+  one), then compares memfs's `*inode.Inode` or, on Unix, the device and
+  inode numbers of a host record, before falling back on `os.SameFile`.
+  Two `Lstat`s of a file a metadata marker changes each report a fresh
+  merged `Sys` value, a new `*inode.Inode` on memfs, so a consumer
+  comparing those pointers (or calling `os.SameFile`) sees two files;
+  `SameFile` sees one.
 - `*UnionFS` implements `absfs.SymlinkFileSystem` directly, adding
   `Chdir`, `Getwd`, `TempDir` and `Truncate`.
 - `IsWhiteout`, `IsOpaqueMarker`, `WhiteoutTarget` and `WhiteoutName`, to
@@ -252,6 +275,9 @@ host-directory test of their own.
 
 These may affect existing callers:
 
+- Requires Go 1.23, and is built and tested against basefs master, which
+  confines each layer to its root and refuses a link whose target climbs
+  out of it.
 - `Create`, `OpenFile` with `O_CREATE`, and `Mkdir` with a missing parent
   directory fail with `ENOENT`, as on any other filesystem; v1.0.0 created
   the parents silently. Use `MkdirAll` first.
@@ -551,3 +577,5 @@ Potential additions for future releases:
 ## License
 
 MIT License - see LICENSE file for details
+
+[#10]: https://github.com/absfs/unionfs/issues/10

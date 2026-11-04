@@ -394,13 +394,15 @@ func TestStoredSpellingHostNormalisation(t *testing.T) {
 	}
 	host, err := osfs.NewFS()
 	must(t, err)
-	upper, err := basefs.NewFS(host, filepath.Join(root, "upper"))
-	must(t, err)
 	lower, err := basefs.NewFS(host, lowerDir)
 	must(t, err)
 	for _, cached := range []bool{false, true} {
+		// A fresh layer over a fresh directory: basefs holds its root
+		// open, so it would not see one made in place of the old.
 		must(t, os.RemoveAll(filepath.Join(root, "upper")))
 		must(t, os.Mkdir(filepath.Join(root, "upper"), 0755))
+		upper, err := basefs.NewFS(host, filepath.Join(root, "upper"))
+		must(t, err)
 		opts := []Option{WithWritableLayer(upper), WithReadOnlyLayer(lower)}
 		if cached {
 			opts = append(opts, WithLookupCache(0, 0))

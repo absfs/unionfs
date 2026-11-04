@@ -598,7 +598,7 @@ func (ufs *UnionFS) Rename(oldname, newname string) error {
 		dst = nil
 	case err != nil:
 		return fail(err)
-	case dst.top() == src.top() && sameEntry(dst.info, src.info):
+	case dst.top() == src.top() && ufs.sameNode(dst, src):
 		// The source itself, by its own name or by another spelling of
 		// it on a host that takes one for the other: the spelling
 		// changes, if anything. A directory does not replace itself.

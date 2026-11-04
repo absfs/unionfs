@@ -42,7 +42,7 @@ per-user overrides, test fixtures with per-test scratch layers.
 go get github.com/absfs/unionfs
 ```
 
-Requires Go 1.21 or later.
+Requires Go 1.23 or later.
 
 ## Quick start
 
@@ -209,6 +209,18 @@ takes as "d deleted, D created". So does renaming an entry to another
 spelling of its own name. A writable layer that does not fold over a lower
 layer that does gets the caller's spelling, as before, since only that one
 reaches the entry there.
+
+To tell another spelling of an entry from another entry, the union
+compares the files' identities, which `SameFile` exposes: unlike
+`os.SameFile`, it also tells for infos a layer wraps (basefs wraps the
+infos its `Stat` and `Lstat` return, and the union wraps those of files a
+metadata marker changes). It looks through any info with an
+`Unwrap() fs.FileInfo` method, then compares the `*inode.Inode` memfs
+reports, or the device and inode numbers of a host record on Unix. Where
+the infos carry no identity it can compare (a wrapped host info on
+Windows, where a host record holds no file ID, or a layer reporting none),
+`Rename` takes the target for the source only when the layer stores both
+names under one spelling in one directory.
 
 Names starting with `.wh..wh.` are reserved for metadata, as in AUFS and
 OCI: they are hidden but delete nothing, and `WhiteoutTarget` returns false

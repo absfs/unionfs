@@ -50,3 +50,18 @@ func copyHostTimes(dst, src *syscall.Stat_t) {
 		}
 	}
 }
+
+// hostSameFile reports whether the host stat records a and b are of the
+// same file, by device and inode number, and whether both are host stat
+// records.
+func hostSameFile(a, b any) (same, known bool) {
+	x, ok := a.(*syscall.Stat_t)
+	if !ok || x == nil {
+		return false, false
+	}
+	y, ok := b.(*syscall.Stat_t)
+	if !ok || y == nil {
+		return false, false
+	}
+	return x.Dev == y.Dev && x.Ino == y.Ino, true
+}

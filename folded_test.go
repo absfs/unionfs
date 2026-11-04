@@ -17,16 +17,20 @@ import (
 )
 
 // foldedKinds are the layer kinds foldedLayers makes.
-var foldedKinds = []string{"memfs", "osfs"}
+var foldedKinds = []string{"memfs", "opaque", "osfs"}
 
 // foldedLayers returns a writable and a read-only layer that both fold the
-// case of names: foldFS over memfs, or host directories where the host
-// folds case (macOS and Windows by default). It skips the test where the
-// host does not.
+// case of names: foldFS over memfs, the same with infos that carry no
+// identity (opaqueFS), or host directories where the host folds case
+// (macOS and Windows by default). It skips the test where the host does
+// not.
 func foldedLayers(t *testing.T, kind string) (upper, lower absfs.SymlinkFileSystem) {
 	t.Helper()
-	if kind == "memfs" {
+	switch kind {
+	case "memfs":
 		return newFoldFS(t), newFoldFS(t)
+	case "opaque":
+		return &opaqueFS{newFoldFS(t)}, &opaqueFS{newFoldFS(t)}
 	}
 	if runtime.GOOS == "windows" {
 		t.Skip("host-directory layers are exercised on Unix")

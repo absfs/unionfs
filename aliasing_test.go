@@ -311,8 +311,13 @@ func TestLookupCacheHostAliasedDirBecomesLink(t *testing.T) {
 			// the layer, then moved up, where it climbs out.
 			must(t, ufs.Mkdir("/stage", 0755))
 			must(t, ufs.Symlink("../outside", "/stage/l"))
-			must(t, ufs.Rename("/stage/l", tc.alias))
-			must(t, ufs.Remove("/stage"))
+			if err := ufs.Rename("/stage/l", tc.alias); err != nil {
+				// A layer confined to its root (basefs since its
+				// confinement) refuses the move, so nothing climbs
+				// out: the rest checks that nothing else does.
+				t.Logf("rename refused: %v", err)
+			}
+			must(t, ufs.RemoveAll("/stage"))
 
 			if f, err := ufs.OpenFile(tc.cached+"/canary", os.O_WRONLY|os.O_TRUNC, 0); err == nil {
 				f.Write([]byte("changed"))
